@@ -1,0 +1,28 @@
+{
+  "name": "senate-ui",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "check": "svelte-check --tsconfig ./tsconfig.json",
+    "theme:build": "node scripts/build-theme.mjs",
+    "prebuild": "npm run theme:build",
+    "test:ui": "playwright test"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "^4.14.0",
+    "@playwright/test": "^1.65.0",
+    "@sveltejs/vite-plugin-svelte": "^5.1.1",
+    "@tsconfig/svelte": "^5.0.8",
+    "svelte": "^5.57.3",
+    "svelte-check": "^4.7.8",
+    "typescript": "~5.9",
+    "vite": "^6.4.6"
+  },
+  "dependencies": {
+    "dompurify": "^3.4.17",
+    "marked": "^18.2.0"
+  }
+}

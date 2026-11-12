@@ -1,0 +1,31 @@
+# Senate node: a compose project of its own. It shares nothing with MBOX — own project name, own network,
+# own volumes, no host mounts, and the port is published on the server's loopback only.
+name: senate
+services:
+  node:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: senate-node:latest
+    container_name: senate-node
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${SENATE_PORT:-17777}:7777"
+    volumes:
+      - senate-data:/data
+      - senate-workspace:/workspace
+    networks: [senate-net]
+    # a ceiling, so a runaway agent cannot starve the neighbours
+    mem_limit: 3g
+    cpus: 2.0
+    pids_limit: 1024
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+volumes:
+  senate-data:
+    name: senate_data
+  senate-workspace:
+    name: senate_workspace
+networks:
+  senate-net:
+    name: senate_net

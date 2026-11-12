@@ -1,0 +1,25 @@
+[package]
+name = "senate-desktop"
+version = "0.1.0"
+edition = "2021"
+description = "Senate desktop shell: embeds a Senate node and shows its UI in a native window"
+
+# Detached from the root workspace so the core crates build fast without the GUI stack.
+[workspace]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-single-instance = "2"
+senate-node = { path = "../../../crates/senate-node" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+serde_json = "1"
+
+[profile.release]
+lto = "thin"
+codegen-units = 4
+strip = true
+opt-level = "s"
+panic = "abort"

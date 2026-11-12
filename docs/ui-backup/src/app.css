@@ -1,0 +1,278 @@
+/* Senate — design tokens. One source of colour/size decisions; components never hardcode them.
+   Direction: calm macOS. Neutral graphite surfaces, one accent, status colours used sparingly. */
+
+:root {
+  --bg: #ffffff;
+  --bg-sidebar: #f3f3f5;
+  --bg-raised: #ffffff;
+  --bg-sunken: #f6f6f8;
+  --bg-hover: rgba(0, 0, 0, 0.045);
+  --bg-active: rgba(0, 0, 0, 0.075);
+  --fg: #1d1d1f;
+  --fg-2: #5f5f66;
+  --fg-3: #8a8a92;
+  --line: rgba(0, 0, 0, 0.09);
+  --line-strong: rgba(0, 0, 0, 0.16);
+  --accent: #0a6cff;
+  --accent-fg: #ffffff;
+  --accent-soft: rgba(10, 108, 255, 0.1);
+  --ok: #1f9d4c;
+  --warn: #b86e00;
+  --bad: #d92d20;
+  --ok-soft: rgba(31, 157, 76, 0.12);
+  --warn-soft: rgba(255, 159, 10, 0.16);
+  --bad-soft: rgba(217, 45, 32, 0.1);
+  --diff-add: rgba(31, 157, 76, 0.13);
+  --diff-del: rgba(217, 45, 32, 0.12);
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.06), 0 0 0 1px rgba(0, 0, 0, 0.04);
+  --shadow-2: 0 10px 34px rgba(0, 0, 0, 0.16), 0 0 0 1px rgba(0, 0, 0, 0.06);
+  --radius-s: 6px;
+  --radius: 10px;
+  --radius-l: 14px;
+  --font: -apple-system, BlinkMacSystemFont, 'Segoe UI Variable Text', 'Segoe UI', Inter, system-ui, sans-serif;
+  --mono: ui-monospace, 'Cascadia Code', 'SF Mono', Menlo, Consolas, monospace;
+  --sidebar-w: 272px;
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --bg: #1b1b1d;
+    --bg-sidebar: #222225;
+    --bg-raised: #2a2a2d;
+    --bg-sunken: #161618;
+    --bg-hover: rgba(255, 255, 255, 0.06);
+    --bg-active: rgba(255, 255, 255, 0.1);
+    --fg: #f2f2f4;
+    --fg-2: #b0b0b8;
+    --fg-3: #85858e;
+    --line: rgba(255, 255, 255, 0.09);
+    --line-strong: rgba(255, 255, 255, 0.17);
+    --accent: #3d8bff;
+    --accent-soft: rgba(61, 139, 255, 0.16);
+    --ok: #46c46f;
+    --warn: #f0a63a;
+    --bad: #ff6a5e;
+    --ok-soft: rgba(70, 196, 111, 0.16);
+    --warn-soft: rgba(240, 166, 58, 0.18);
+    --bad-soft: rgba(255, 106, 94, 0.16);
+    --diff-add: rgba(70, 196, 111, 0.18);
+    --diff-del: rgba(255, 106, 94, 0.17);
+    --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.05);
+    --shadow-2: 0 12px 40px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255, 255, 255, 0.08);
+    color-scheme: dark;
+  }
+}
+:root[data-theme='dark'] {
+  --bg: #1b1b1d;
+  --bg-sidebar: #222225;
+  --bg-raised: #2a2a2d;
+  --bg-sunken: #161618;
+  --bg-hover: rgba(255, 255, 255, 0.06);
+  --bg-active: rgba(255, 255, 255, 0.1);
+  --fg: #f2f2f4;
+  --fg-2: #b0b0b8;
+  --fg-3: #85858e;
+  --line: rgba(255, 255, 255, 0.09);
+  --line-strong: rgba(255, 255, 255, 0.17);
+  --accent: #3d8bff;
+  --accent-soft: rgba(61, 139, 255, 0.16);
+  --ok: #46c46f;
+  --warn: #f0a63a;
+  --bad: #ff6a5e;
+  --ok-soft: rgba(70, 196, 111, 0.16);
+  --warn-soft: rgba(240, 166, 58, 0.18);
+  --bad-soft: rgba(255, 106, 94, 0.16);
+  --diff-add: rgba(70, 196, 111, 0.18);
+  --diff-del: rgba(255, 106, 94, 0.17);
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.05);
+  --shadow-2: 0 12px 40px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255, 255, 255, 0.08);
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font: 14px/1.5 var(--font);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overflow: hidden;
+}
+button,
+input,
+textarea,
+select {
+  font: inherit;
+  color: inherit;
+}
+button {
+  cursor: pointer;
+  background: none;
+  border: 0;
+  padding: 0;
+}
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-radius: var(--radius-s);
+}
+::selection {
+  background: var(--accent-soft);
+}
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  border-radius: 8px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--fg-3);
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+
+/* shared controls */
+.btn {
+  height: 30px;
+  padding: 0 12px;
+  border-radius: var(--radius-s);
+  background: var(--bg-hover);
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  transition: background 0.12s var(--ease);
+}
+.btn:hover {
+  background: var(--bg-active);
+}
+.btn.primary {
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+.btn.primary:hover {
+  filter: brightness(1.08);
+}
+.btn.danger {
+  color: var(--bad);
+}
+.btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.btn.sm {
+  height: 26px;
+  padding: 0 9px;
+  font-size: 13px;
+}
+.icon-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-s);
+  display: inline-grid;
+  place-items: center;
+  color: var(--fg-2);
+}
+.icon-btn:hover {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+.field {
+  width: 100%;
+  height: 32px;
+  padding: 0 10px;
+  border-radius: var(--radius-s);
+  border: 1px solid var(--line-strong);
+  background: var(--bg-raised);
+  outline: none;
+}
+textarea.field {
+  height: auto;
+  padding: 8px 10px;
+  resize: vertical;
+  line-height: 1.5;
+}
+.field:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.muted {
+  color: var(--fg-2);
+}
+.faint {
+  color: var(--fg-3);
+}
+.mono {
+  font-family: var(--mono);
+}
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 20px;
+  padding: 0 7px;
+  border-radius: 10px;
+  background: var(--bg-hover);
+  color: var(--fg-2);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.chip.ok {
+  background: var(--ok-soft);
+  color: var(--ok);
+}
+.chip.warn {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+.chip.bad {
+  background: var(--bad-soft);
+  color: var(--bad);
+}
+.chip.accent {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.kbd {
+  font: 11px var(--mono);
+  padding: 1px 5px;
+  border-radius: 4px;
+  border: 1px solid var(--line-strong);
+  color: var(--fg-3);
+}
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
+}
