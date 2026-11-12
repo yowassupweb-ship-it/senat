@@ -70,9 +70,9 @@
     position: absolute;
     inset: -4px;
     border-radius: 50%;
-    background: conic-gradient(from -90deg, var(--c) var(--deg), var(--line) 0);
-    -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 2.5px), #000 calc(100% - 2px));
-    mask: radial-gradient(farthest-side, transparent calc(100% - 2.5px), #000 calc(100% - 2px));
+    background: conic-gradient(from -90deg, var(--c) var(--deg), var(--line) 0); /* design-ok: progress ring, drawn as a mask */
+    -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 2.5px), #000 calc(100% - 2px)); /* design-ok: ring mask */
+    mask: radial-gradient(farthest-side, transparent calc(100% - 2.5px), #000 calc(100% - 2px)); /* design-ok: ring mask */
   }
   @media (prefers-reduced-motion: reduce) {
     .working::after {

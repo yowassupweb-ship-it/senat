@@ -2,8 +2,10 @@
   import { onMount } from 'svelte';
   import { ApiError, bootstrapConnection, openExternal, setConnection } from './lib/api';
   import { parseLink } from './lib/nodes';
+  import { managedLink, readLink, type LinkState } from './lib/link';
   import { app, applyTheme, go, hashToView, loadState, startEvents } from './lib/store.svelte';
   import ActivePanel from './components/ActivePanel.svelte';
+  import Emblem from './components/Emblem.svelte';
   import Icon from './components/Icon.svelte';
   import Chat from './components/Chat.svelte';
   import Palette from './components/Palette.svelte';
@@ -25,6 +27,9 @@
   import Settings from './views/Settings.svelte';
 
   let connecting = $state(false);
+  // Desktop with a server node: the link is rebuilt by the app itself, so a failed start is "wait", not "ask the person".
+  const managed = managedLink();
+  let link = $state<LinkState | null>(null);
   let connected = $state(false);
   let problem = $state('');
   let hub = $state('');
@@ -47,6 +52,13 @@
   }
 
   onMount(() => {
+    // While the node is not reachable the app retries by itself and says why; the person has nothing to press.
+    const watch = managed
+      ? setInterval(async () => {
+          link = await readLink();
+          if (!connected && !connecting) boot();
+        }, 1500)
+      : undefined;
     try {
       const t = localStorage.getItem('senate.theme') as 'auto' | 'light' | 'dark' | null;
       if (t) applyTheme(t);
@@ -80,6 +92,7 @@
     };
     document.addEventListener('click', onLink);
     return () => {
+      clearInterval(watch);
       document.removeEventListener('click', onLink);
       window.removeEventListener('hashchange', onHash);
       window.removeEventListener('keydown', onKey);
@@ -102,10 +115,19 @@
 <ContextMenu />
 {#if chrome}<div class="frame"><Titlebar /></div>{/if}
 <div class="body" class:chrome>
-{#if !connected}
+{#if !connected && managed}
+  <main class="gate">
+    <div class="wait" role="status" aria-live="polite">
+      <Emblem size={64} />
+      <h1>Подключаюсь к серверу…</h1>
+      <p class="muted">{link?.detail || 'Устанавливаю защищённое соединение с нодой.'}</p>
+      <p class="faint hint">Ничего нажимать не нужно: приложение подключится само, как только сервер станет доступен.</p>
+    </div>
+  </main>
+{:else if !connected}
   <main class="gate">
     <form onsubmit={connect}>
-      <img class="logo" src="/logo.png" width="72" height="72" alt="Senate" />
+      <Emblem size={64} />
       <h1>Подключение к Senate</h1>
       <p class="muted">
         Десктопное приложение подключается к своей ноде само. Если вы открыли Senate в браузере или хотите работать с удалённой нодой — введите её адрес и токен
@@ -176,6 +198,22 @@
     flex-direction: column;
     gap: 12px;
   }
+  .wait {
+    width: 400px;
+    max-width: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    text-align: center;
+    align-items: center;
+  }
+  .wait p {
+    margin: 0;
+    line-height: 1.5;
+  }
+  .wait .hint {
+    font-size: 12.5px;
+  }
   .gate h1 {
     margin: 0;
     font-size: 22px;
@@ -189,11 +227,7 @@
     gap: 4px;
     font-weight: 500;
   }
-  .logo {
-    width: 72px;
-    height: 72px;
-    object-fit: contain;
-  }  .bad {
+  .bad {
     color: var(--bad);
   }
   .boot {

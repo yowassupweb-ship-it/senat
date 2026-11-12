@@ -205,11 +205,31 @@ fn session_is_held(o: &Outcome) -> bool {
     o.failure.as_deref().map(|f| f.contains("active writer")).unwrap_or(false)
 }
 
+/// The CLI no longer knows the session it was asked to resume: it was cleaned up, the CLI was reinstalled, or the
+/// node moved to another machine. Each CLI words it its own way.
+pub fn session_is_lost(o: &Outcome) -> bool {
+    let Some(f) = o.failure.as_deref() else { return false };
+    let l = f.to_lowercase();
+    o.text.is_empty()
+        && !o.stopped
+        && (l.contains("no conversation found")
+            || l.contains("unknown sessionid")
+            || l.contains("unknown session")
+            || l.contains("session not found")
+            || (l.contains("session") && (l.contains("not found") || l.contains("no such") || l.contains("does not exist"))))
+}
+
 /// Run one turn. A resume that hits a held session is retried once after a short wait (an orphan exits when its
 /// pipes close); if the session is still held, the turn runs in a fresh session rather than failing — the
-/// system prompt travels with it, so the specialist is still itself.
+/// system prompt travels with it, so the specialist is still itself. A session the CLI has lost altogether goes
+/// straight to a fresh one: there is nothing to wait for, and the person should not see an error for it.
 pub async fn run(spec: RunSpec, approver: &dyn Approver, tx: EventTx, cancel: CancelRx) -> Outcome {
     let mut out = run_once(spec.clone(), approver, tx.clone(), cancel.clone()).await;
+    if spec.resume.is_some() && session_is_lost(&out) && !*cancel.borrow() {
+        let mut fresh = spec;
+        fresh.resume = None;
+        return run_once(fresh, approver, tx, cancel).await;
+    }
     if spec.resume.is_some() && session_is_held(&out) && !*cancel.borrow() {
         tokio::time::sleep(std::time::Duration::from_secs(4)).await;
         out = run_once(spec.clone(), approver, tx.clone(), cancel.clone()).await;

@@ -2,13 +2,14 @@
   import { currentConnection, del, disconnect, get, hubUrl, post, put } from '../lib/api';
   import { activeNodeId, makeLink, parseLink, pingNode, removeNode, savedNodes, setActiveNode, upsertNode, type Reach, type SavedNode } from '../lib/nodes';
   import { app, applyTheme } from '../lib/store.svelte';
-  import { dateTime } from '../lib/format';
+  import { N, count, dateTime } from '../lib/format';
   import { modelOptions } from '../lib/models';
   import type { Account, PermissionRule } from '../lib/types';
   import BrandMark from '../components/BrandMark.svelte';
   import Dropdown from '../components/Dropdown.svelte';
   import Icon from '../components/Icon.svelte';
   import Page from '../components/Page.svelte';
+  import StatusPanel from '../components/StatusPanel.svelte';
 
   let nodes = $state<SavedNode[]>(savedNodes());
   let reach = $state<Record<string, Reach | 'wait'>>({});
@@ -203,6 +204,7 @@
 
 <Page title="Настройки">
   {#if error}<div class="notice bad" role="alert">{error}</div>{/if}
+  <StatusPanel />
   {#if s}
     <section class="block">
       <h2>Агенты</h2>
@@ -263,7 +265,7 @@
 
             {#if a.state === 'ready'}
               <div class="foot">
-                <button class="lnk" onclick={() => (showModels[a.provider] = !showModels[a.provider])}>{a.models.length} моделей <Icon name={showModels[a.provider] ? 'down' : 'right'} size={12} /></button>
+                <button class="lnk" onclick={() => (showModels[a.provider] = !showModels[a.provider])}>{count(a.models.length, N.model)} <Icon name={showModels[a.provider] ? 'down' : 'right'} size={12} /></button>
                 {#if a.limits?.windows}
                   <div class="limits">
                     {#each Object.entries(a.limits.windows) as [k, w]}
@@ -582,5 +584,9 @@
     border-top: 1px solid var(--line);
   }
   @media (max-width: 980px) { .head, .rs { flex-wrap: wrap; } .btns { flex-wrap: wrap; } }
+  /* a narrow window: the name keeps its line, the buttons move under it instead of covering it */
+  .head .grow { min-width: 0; }
+  .nm { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
+  @media (max-width: 560px) { .head .grow { flex: 1 1 calc(100% - 52px); } .btns { margin-left: 50px; } }
   @media (max-width: 760px) { .rs { gap: 10px; } .head { align-items: flex-start; } .tabs { flex-wrap: wrap; } .btns { max-width: 100%; } .btns .btn { white-space: normal; height: auto; min-height: 30px; overflow-wrap: anywhere; } }
 </style>

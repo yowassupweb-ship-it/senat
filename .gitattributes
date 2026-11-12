@@ -1,0 +1,2 @@
+# Shell scripts run on the Linux server: they keep LF on every checkout, whatever core.autocrlf says.
+*.sh text eol=lf

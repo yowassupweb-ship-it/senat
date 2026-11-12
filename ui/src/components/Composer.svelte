@@ -14,7 +14,7 @@
 <script lang="ts">
   import { app } from '../lib/store.svelte';
   import { openExternal, post, upload, type Uploaded } from '../lib/api';
-  import { MODE_LABEL } from '../lib/format';
+  import { MODE_LABEL, N, count } from '../lib/format';
   import BrandMark from './BrandMark.svelte';
   import Avatar from './Avatar.svelte';
   import Dropdown from './Dropdown.svelte';
@@ -130,7 +130,7 @@
     attachNote = '';
     for (const file of list) {
       if (files.length >= MAX_FILES) {
-        attachNote = `Не больше ${MAX_FILES} файлов в одном сообщении`;
+        attachNote = `Не больше ${count(MAX_FILES, N.file)} в одном сообщении`;
         break;
       }
       if (file.size > MAX_MB * 1024 * 1024) {
@@ -536,12 +536,15 @@
   }
   .composer { padding-bottom: 18px; }
   .box { border-radius: var(--radius-xl); box-shadow: var(--shadow-composer); }
-  .box:focus-within { box-shadow: var(--focus-ring), var(--shadow-composer); }
+  /* the field is focused nearly always: it brightens its own hairline instead of wearing a ring */
+  .box:focus-within { box-shadow: var(--shadow-composer-focus); }
   textarea { padding: 16px 16px 10px; min-height: 64px; }
   .bar { flex-wrap: wrap; padding: 6px 10px 10px; gap: 3px; }
   .send { flex: none; }
   .hint { padding-top: 8px; font-size: 11px; }
   .hint span { padding: 0 6px; }
+  /* keyboard shortcuts mean nothing on a touch screen */
+  @media (hover: none) and (pointer: coarse) { .hint { display: none; } }
   .under {
     display: flex;
     align-items: center;
@@ -623,7 +626,7 @@
   .task { display: flex; align-items: flex-start; gap: 8px; padding: 4px 8px; font-size: 12.5px; line-height: 1.4; }
   .task .chk { flex: none; box-sizing: border-box; width: 16px; height: 16px; margin-top: 1px; border-radius: 50%; border: 1.5px solid var(--line-strong); background: none; display: grid; place-items: center; }
   .task.now { font-weight: 600; }
-  .task.now .chk { border-color: var(--accent); background: radial-gradient(circle, var(--accent) 0 35%, transparent 40%); }
+  .task.now .chk { border-color: var(--accent); background: radial-gradient(circle, var(--accent) 0 35%, transparent 40%); } /* design-ok: a hard-edged dot, not a gradient */
   .task.done { color: var(--fg-3); }
   .task.done .chk { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
   .task span { padding: 0; }

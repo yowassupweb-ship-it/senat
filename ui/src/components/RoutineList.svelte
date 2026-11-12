@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Dropdown from './Dropdown.svelte';
   import { del, get, patch, post } from '../lib/api';
   import { agentById, app, go, onEvent } from '../lib/store.svelte';
   import { dateTime } from '../lib/format';
@@ -43,6 +44,10 @@
   }
   async function save() {
     error = '';
+    if (!form.agent_id) {
+      error = 'Выберите специалиста';
+      return;
+    }
     try {
       if (editing) await patch(`/api/routines/${editing}`, form);
       else await post('/api/routines', form);
@@ -125,15 +130,12 @@
   <form class="form" onsubmit={(e) => { e.preventDefault(); save(); }}>
     <div class="two">
       <label>Специалист
-        <select class="field" bind:value={form.agent_id} required disabled={!!agentId || !!editing}><option value="" disabled>Выберите…</option>{#each app.agents as a}<option value={a.id}>{a.name}</option>{/each}</select></label>
+        <Dropdown block value={form.agent_id} options={[{ id: '', label: 'Выберите…', disabled: true }, ...app.agents.map((a) => ({ id: a.id, label: a.name }))]} label="Специалист" disabled={!!agentId || !!editing} onpick={(v) => (form.agent_id = v)} /></label>
       <label>Название<input class="field" bind:value={form.name} required placeholder="Утренний обход" /></label>
     </div>
     <div class="two">
       <label>Когда
-        <select class="field" value={custom ? '' : form.cron} onchange={(e) => { if (e.currentTarget.value) form.cron = e.currentTarget.value; }}>
-          {#each CRON_PRESETS as p}<option value={p.cron}>{p.label}</option>{/each}
-          <option value="">Своё расписание…</option>
-        </select></label>
+        <Dropdown block value={custom ? '' : form.cron} options={[...CRON_PRESETS.map((p) => ({ id: p.cron, label: p.label })), { id: '', label: 'Своё расписание…', hint: 'впишите его в поле cron рядом' }]} label="Когда" onpick={(v) => { if (v) form.cron = v; }} /></label>
       <label>Расписание (cron) <small>минуты часы число месяц день_недели · по времени этого компьютера</small>
         <input class="field mono" bind:value={form.cron} required placeholder="0 9 * * 1" /></label>
     </div>

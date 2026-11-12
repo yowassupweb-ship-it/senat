@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Dropdown from '../components/Dropdown.svelte';
   import { del, get, patch, post } from '../lib/api';
   import { agentById, app, onEvent } from '../lib/store.svelte';
   import { dateTime } from '../lib/format';
@@ -190,10 +191,7 @@
             {/each}
             {#if without(m).length}
               <div class="add">
-                <select class="field" aria-label="Выдать специалисту" onchange={(e) => { const v = e.currentTarget.value; e.currentTarget.value = ''; if (v) grant(m, v, 'ask'); }}>
-                  <option value="">Выдать специалисту…</option>
-                  {#each without(m) as a (a.id)}<option value={a.id}>{a.name}</option>{/each}
-                </select>
+                <Dropdown block value="" options={[{ id: '', label: 'Выдать специалисту…', disabled: true }, ...without(m).map((a) => ({ id: a.id, label: a.name }))]} label="Выдать специалисту" onpick={(v) => { if (v) grant(m, v, 'ask'); }} />
                 {#if without(m).length > 1}<button class="lnk" onclick={() => grantAll(m, 'ask')} title="Всем остальным: придёт запрос каждый раз">Всем остальным: спросит</button>{/if}
               </div>
             {/if}
@@ -228,7 +226,7 @@
       <label>Название<input class="field" bind:value={form.label} placeholder="Боевой сервер" /></label>
     </div>
     <div class="row2">
-      <label>Вид<select class="field" bind:value={form.kind}>{#each Object.entries(kinds) as [k, v]}<option value={k}>{v}</option>{/each}</select></label>
+      <label>Вид<Dropdown block value={form.kind} options={Object.entries(kinds).map(([k, v]) => ({ id: k, label: v as string }))} label="Вид" onpick={(v) => (form.kind = v as typeof form.kind)} /></label>
       <label>Адрес<input class="field mono" bind:value={form.host} required placeholder={hostHint[form.kind]} /></label>
     </div>
     <div class="row2">
@@ -265,7 +263,7 @@
   .who { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; }
   .gact { display: inline-flex; align-items: center; gap: 6px; }
   .add { display: flex; align-items: center; gap: 12px; margin-top: 4px; flex-wrap: wrap; }
-  .add select { width: 230px; }
+  .add :global(.dd) { width: 230px; }
   .lnk { color: var(--accent); font-size: 12.5px; }
   .lnk:hover { text-decoration: underline; }
   .tabs { display: inline-flex; padding: 2px; border-radius: 8px; background: var(--bg-hover); gap: 2px; }

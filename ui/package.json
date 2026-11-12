@@ -8,7 +8,8 @@
     "build": "vite build",
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "theme:build": "node scripts/build-theme.mjs",
-    "prebuild": "npm run theme:build",
+    "prebuild": "npm run theme:build && npm run check:design",
+    "check:design": "node scripts/check-design.mjs",
     "test:ui": "playwright test"
   },
   "devDependencies": {
@@ -22,6 +23,7 @@
     "vite": "^6.4.6"
   },
   "dependencies": {
+    "@fontsource-variable/inter": "^5.3.0",
     "dompurify": "^3.4.17",
     "marked": "^18.2.0"
   }

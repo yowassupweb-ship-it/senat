@@ -69,7 +69,7 @@ async fn auth(State(app): S, req: Request, next: Next) -> Response {
 
 pub fn router(app: Arc<App>) -> Router {
     let api = Router::new()
-        .route("/api/health", get(|| async { Json(json!({"ok": true, "name": "senate-node", "version": env!("CARGO_PKG_VERSION")})) }))
+        .route("/api/health", get(|| async { Json(json!({"ok": true, "name": "senate-node", "version": env!("CARGO_PKG_VERSION"), "build": env!("SENATE_BUILD")})) }))
         .route("/api/state", get(state))
         .route("/api/events", get(events))
         .route("/api/attention", get(|State(a): S| async move { ok(a.store.attention()?) }))
@@ -86,6 +86,7 @@ pub fn router(app: Arc<App>) -> Router {
         // chats
         .route("/api/threads", get(threads).post(create_thread))
         .route("/api/threads/:id", get(get_thread).patch(patch_thread))
+        .route("/api/import/threads", post(import_threads))
         .route("/api/threads/:id/messages", get(messages).post(send))
         // files the person attaches (screenshots): one upload per file, then messages refer to them by id
         .route("/api/uploads", post(upload).layer(DefaultBodyLimit::max(uploads::MAX_BYTES + 1024 * 1024)))
@@ -227,6 +228,7 @@ async fn state(State(a): S) -> R {
         "default_backend": a.backend_default(),
         "node_id": a.node_id,
         "version": env!("CARGO_PKG_VERSION"),
+        "build": env!("SENATE_BUILD"),
     }))
 }
 
@@ -278,6 +280,23 @@ async fn patch_thread(State(a): S, Path(id): Path<String>, Json(b): Json<Value>)
     let t = a.store.patch_thread(&id, p)?;
     a.publish("thread", json!({"id": t.id}));
     ok(t)
+}
+
+/// Chats from another Senate database: `{"threads": [{"thread": {...}, "messages": [...]}]}`. Additive and
+/// repeatable — see `Store::import_thread`.
+async fn import_threads(State(a): S, Json(b): Json<Value>) -> R {
+    let items = b["threads"].as_array().ok_or_else(|| bad("нужен список threads"))?;
+    let mut out = Vec::new();
+    for it in items {
+        let msgs = it["messages"].as_array().cloned().unwrap_or_default();
+        let (created, added) = a.store.import_thread(&it["thread"], &msgs)?;
+        let id = it["thread"]["id"].as_str().unwrap_or_default().to_string();
+        if created || added > 0 {
+            a.publish("thread", json!({"id": id}));
+        }
+        out.push(json!({"id": id, "created": created, "messages_added": added}));
+    }
+    ok(out)
 }
 
 async fn messages(State(a): S, Path(id): Path<String>, Query(q): Query<HashMap<String, String>>) -> R {

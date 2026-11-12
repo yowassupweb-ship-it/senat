@@ -2,7 +2,7 @@
   import type { Message } from '../lib/types';
   import { agentById, app } from '../lib/store.svelte';
   import { post } from '../lib/api';
-  import { clock, dur, md, modelLabel, roleLabel, tokens } from '../lib/format';
+  import { clock, dur, md, modelLabel, roleLabel, tokens, explainFailure } from '../lib/format';
   import { PROVIDER_NAME } from '../lib/models';
   import Avatar from './Avatar.svelte';
   import BrandMark from './BrandMark.svelte';
@@ -204,9 +204,14 @@
     {/if}
     {#if m.status === 'cancelled'}<div class="note faint"><Icon name="x" size={12} /> Остановлено</div>{/if}
     {#if m.status === 'failed'}
+      {@const why = explainFailure(p.error)}
       <div class="err" role="alert">
         <Icon name="alert" size={15} />
-        <div><b>Ответ не получен</b><span>{p.error ?? 'неизвестная ошибка'}</span></div>
+        <div class="why">
+          <b>{why.title}</b>
+          {#if why.hint}<span>{why.hint}</span>{/if}
+          {#if p.error && why.title !== 'Ответ не получен'}<details><summary>Подробности</summary><code>{p.error}</code></details>{:else if p.error}<span class="raw">{p.error}</span>{/if}
+        </div>
         <button class="btn sm" onclick={() => onretry(m)}>Повторить</button>
       </div>
     {/if}
@@ -504,10 +509,42 @@
     flex-direction: column;
     min-width: 0;
   }
+  .err {
+    align-items: flex-start;
+  }
+  .err :global(svg) {
+    margin-top: 2px;
+    flex: none;
+  }
+  .err .why {
+    gap: 2px;
+  }
   .err span {
     color: var(--fg-2);
     font-size: 13px;
+    line-height: 1.45;
     overflow-wrap: anywhere;
+  }
+  .err details {
+    margin-top: 4px;
+    font-size: 12px;
+    color: var(--fg-3);
+  }
+  .err summary {
+    cursor: pointer;
+    width: fit-content;
+    border-radius: 4px;
+  }
+  .err summary:hover {
+    color: var(--fg-2);
+  }
+  .err code {
+    display: block;
+    margin-top: 4px;
+    font-size: 11.5px;
+    color: var(--fg-2);
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
   }
   .foot {
     display: flex;

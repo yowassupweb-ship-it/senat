@@ -6,30 +6,48 @@
   import Icon from './Icon.svelte';
 
   // The right-hand panel: who is working right now, on what, and a way to stop them.
-  const KEY = 'senate.live.open';
-  // Open if the person left it open (or closed, if they closed it). Never chosen: open only where there is room,
-  // so on a narrow window the chat keeps the width.
-  const read = () => {
+  // It takes room only when there is something to show: while somebody works it opens by itself, when the last one
+  // finishes it folds back into a narrow strip and the chat gets the width. The person can still decide:
+  //   * opening it by hand while nobody works pins it open (remembered);
+  //   * folding it by hand while somebody works keeps it folded until that work is over.
+  // On a narrow window it never opens by itself.
+  const KEY = 'senate.live.pin';
+  const readPin = () => {
     try {
-      const v = localStorage.getItem(KEY);
-      if (v === '1') return true;
-      if (v === '0') return false;
+      return localStorage.getItem(KEY) === '1';
     } catch {
-      /* storage can be unavailable */
+      return false;
     }
-    return window.innerWidth >= 1280;
   };
-  let open = $state(read());
-  function toggle() {
-    open = !open;
+  const savePin = (v: boolean) => {
     try {
-      localStorage.setItem(KEY, open ? '1' : '0');
+      if (v) localStorage.setItem(KEY, '1');
+      else localStorage.removeItem(KEY);
     } catch {
       /* storage can be unavailable: the panel still works */
     }
-  }
-
+  };
+  let pinned = $state(readPin());
+  let dismissed = $state(false);
+  let wide = $state(window.innerWidth >= 1280);
   const runs = $derived(app.live);
+  const busy = $derived(runs.some((r) => r.status === 'running' || r.status === 'queued' || r.awaiting));
+  const open = $derived(pinned || (busy && !dismissed && wide));
+  $effect(() => {
+    if (!busy) dismissed = false;
+  });
+  function toggle() {
+    if (open) {
+      pinned = false;
+      savePin(false);
+      if (busy) dismissed = true;
+    } else if (busy) {
+      dismissed = false;
+    } else {
+      pinned = true;
+      savePin(true);
+    }
+  }
   let now = $state(Date.now());
   const soon = () => refreshLive();
 
@@ -64,13 +82,15 @@
   }
 </script>
 
+<svelte:window onresize={() => (wide = window.innerWidth >= 1280)} />
+
 <aside class="live" class:rail={!open} aria-label="Сейчас работают">
   {#if open}
     <header>
       <b>Сейчас работают</b>
       {#if runs.length}<span class="count" aria-label={`${runs.length} в работе`}>{runs.length}</span>{/if}
       <span class="grow"></span>
-      <button class="icon-btn" onclick={toggle} aria-label="Свернуть панель" title="Свернуть"><Icon name="right" size={15} /></button>
+      <button class="icon-btn" onclick={toggle} aria-label="Свернуть панель" title={busy ? 'Свернуть до конца работы' : 'Свернуть'}><Icon name="right" size={15} /></button>
     </header>
     <div class="list">
       {#each runs as r (r.session_id)}
@@ -94,12 +114,12 @@
           </div>
         </article>
       {:else}
-        <p class="empty muted">Никто не работает. Когда специалист возьмётся за дело, он появится здесь.</p>
+        <p class="empty muted">Никто не работает. Панель закреплена: сверните её, и она будет открываться сама, когда кто-то возьмётся за дело.</p>
       {/each}
 
     </div>
   {:else}
-    <button class="rail-btn" onclick={toggle} aria-label={`Сейчас работают: ${runs.length}. Развернуть панель`} title="Сейчас работают">
+    <button class="rail-btn" onclick={toggle} aria-label={busy ? `Сейчас работают: ${runs.length}. Развернуть панель` : 'Никто не работает. Закрепить панель открытой'} title={busy ? 'Сейчас работают' : 'Никто не работает'}>
       <Icon name="bolt" size={16} />
       {#if runs.length}<span class="count">{runs.length}</span>{/if}
       {#each runs.slice(0, 6) as r (r.session_id)}
@@ -119,8 +139,13 @@
     min-height: 0;
     border-left: 1px solid var(--line-strong);
     background: var(--bg);
+    transition: width 0.22s var(--ease-out, ease);
+    overflow: hidden;
   }
   .live.rail { width: 56px; }
+  @media (prefers-reduced-motion: reduce) {
+    .live { transition: none; }
+  }
   header { display: flex; align-items: center; gap: 8px; padding: 14px 10px 10px 16px; font-size: 13px; }
   .grow { flex: 1; }
   .count { min-width: 18px; padding: 0 6px; border-radius: 999px; background: var(--accent); color: var(--accent-fg); font-size: 11px; font-weight: 650; line-height: 18px; text-align: center; font-variant-numeric: tabular-nums; }

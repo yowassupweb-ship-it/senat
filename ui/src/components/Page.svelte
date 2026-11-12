@@ -1,11 +1,22 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
-  let { title, sub = '', actions, children }: { title: string; sub?: string; actions?: Snippet; children: Snippet } = $props();
+  import Icon from './Icon.svelte';
+  let {
+    title,
+    sub = '',
+    back,
+    actions,
+    children,
+  }: { title: string; sub?: string; back?: { label: string; onclick: () => void }; actions?: Snippet; children: Snippet } = $props();
 </script>
 
 <section class="page">
   <header>
-    <div class="t"><h1>{title}</h1>{#if sub}<p class="muted">{sub}</p>{/if}</div>
+    <div class="t">
+      {#if back}<button class="crumb" onclick={back.onclick}><Icon name="left" size={13} />{back.label}</button>{/if}
+      {#if title}<h1>{title}</h1>{/if}
+      {#if sub}<p class="muted">{sub}</p>{/if}
+    </div>
     {#if actions}<div class="acts">{@render actions()}</div>{/if}
   </header>
   <div class="body"><div class="in">{@render children()}</div></div>
@@ -44,6 +55,26 @@
     display: flex;
     gap: 8px;
   }
+  .crumb {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    margin: 0 0 2px -5px;
+    padding: 2px 7px 2px 3px;
+    border-radius: 6px;
+    font-size: 12.5px;
+    font-weight: 500;
+    color: var(--fg-3);
+    transition: color 0.12s var(--ease), background 0.12s var(--ease);
+  }
+  .crumb:hover {
+    color: var(--fg);
+    background: var(--bg-hover);
+  }
+  .crumb:focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
+  }
   .body {
     flex: 1;
     overflow-y: auto;
@@ -63,7 +94,7 @@
     background: var(--toolbar);
     backdrop-filter: blur(20px) saturate(1.4);
   }
-  h1 { font-size: 26px; line-height: 1.15; font-weight: 650; letter-spacing: -0.03em; }
+  h1 { font-size: 24px; line-height: 1.2; font-weight: 650; letter-spacing: -0.022em; }
   .t p { margin-top: 4px; font-size: 13px; }
   .body { padding: 22px 28px 44px; }
   .acts { flex-wrap: wrap; }

@@ -795,3 +795,86 @@ fn compact_asks_the_specialist_for_a_summary_and_starts_a_fresh_session() {
     let d2 = st.send_chat(ChatSend { thread_id: t2.id.clone(), text: "/compact".into(), ..Default::default() }, "claude:sonnet").unwrap();
     assert!(d2.sessions.is_empty());
 }
+
+/// «Прикрепи чат к вокруг света»: the name is typed in lower case, in Cyrillic, and the chat already has a
+/// project with no company. SQLite's lower() could not match it; and filing under a company must not drop
+/// the project.
+#[test]
+fn attach_finds_a_company_in_any_case_and_keeps_the_project() {
+    let (st, dev, _arch, p) = setup();
+    let vs = st.create_company(NewCompany { name: "Вокруг света".into(), ..Default::default() }).unwrap();
+    let other = st.create_company(NewCompany { name: "Ассет".into(), ..Default::default() }).unwrap();
+    let t = st.create_thread(NewThread { project_id: Some(p.id.clone()), ..Default::default() }).unwrap();
+    let ctx = ToolCtx { agent_id: dev.id.clone(), thread_id: Some(t.id.clone()), ..Default::default() };
+
+    let r = tools::call(&st, &ctx, "senate_attach", &json!({"company": "вокруг света"})).unwrap();
+    assert_eq!(r["company"], "Вокруг света");
+    let t1 = st.get_thread(&t.id).unwrap();
+    assert_eq!(t1.company_id.as_deref(), Some(vs.id.as_str()));
+    assert_eq!(t1.project_id.as_deref(), Some(p.id.as_str()), "проект без компании остаётся у чата");
+
+    // a unique part of the name is enough
+    tools::call(&st, &ctx, "senate_attach", &json!({"company": "ВОКРУГ"})).unwrap();
+
+    // a project that belongs to another company is left behind
+    st.update_project(&p.id, senate_core::store::ProjectPatch { company_id: Some(other.id.clone()), ..Default::default() }).unwrap();
+    tools::call(&st, &ctx, "senate_attach", &json!({"company": "Вокруг Света"})).unwrap();
+    assert_eq!(st.get_thread(&t.id).unwrap().project_id, None);
+
+    // an unknown name says which companies exist
+    let e = tools::call(&st, &ctx, "senate_attach", &json!({"company": "Рога и копыта"})).unwrap_err().to_string();
+    assert!(e.contains("Ассет") && e.contains("Вокруг света"), "{e}");
+
+    // the exact lookup used for creating never takes a part for the whole
+    assert!(st.company_by_name("вокруг").unwrap().is_none());
+    assert!(st.company_by_name("ВОКРУГ  СВЕТА").unwrap().is_some());
+}
+
+/// A chat is filed under a company or a project from the UI, and taken out again with an empty string.
+#[test]
+fn a_chat_is_filed_and_unfiled_by_patch() {
+    let (st, _dev, _arch, p) = setup();
+    let co = st.create_company(NewCompany { name: "Acme".into(), ..Default::default() }).unwrap();
+    let t = st.create_thread(NewThread::default()).unwrap();
+    let patch = |c: Option<&str>, pr: Option<&str>| senate_core::store::ThreadPatch { company_id: c.map(String::from), project_id: pr.map(String::from), ..Default::default() };
+    let t1 = st.patch_thread(&t.id, patch(Some(&co.id), Some(&p.id))).unwrap();
+    assert_eq!((t1.company_id.as_deref(), t1.project_id.as_deref()), (Some(co.id.as_str()), Some(p.id.as_str())));
+    let t2 = st.patch_thread(&t.id, patch(Some(""), Some(""))).unwrap();
+    assert_eq!((t2.company_id, t2.project_id), (None, None));
+    assert!(st.patch_thread(&t.id, patch(Some("нет-такой"), None)).is_err());
+}
+
+/// A chat written into a local database while the server was out of reach comes over additively: kept ids,
+/// nothing overwritten, unknown references dropped, a half-finished turn not left "working", and a second
+/// run is a no-op.
+#[test]
+fn a_chat_imports_additively_and_repeatably() {
+    let (st, dev, _arch, p) = setup();
+    let existing = st.create_thread(NewThread::default()).unwrap();
+    st.patch_thread(&existing.id, senate_core::store::ThreadPatch { title: Some("Свой".into()), ..Default::default() }).unwrap();
+
+    let t = json!({"id": "imp-1", "kind": "chat", "title": "Круизы из JSON", "project_id": p.id, "company_id": "нет-такой", "agent_id": dev.id, "created_at": 1000, "updated_at": 2000});
+    let msgs = vec![
+        json!({"id": "m1", "author_kind": "user", "body": "Взяв за основу базу круизов", "status": "done", "props": "{}", "created_at": 1000, "updated_at": 1000}),
+        json!({"id": "m2", "author_kind": "agent", "author_id": dev.id, "body": "Сделал", "status": "done", "props": "{\"model\":\"x\"}", "created_at": 3000, "updated_at": 3000}),
+        json!({"id": "m3", "author_kind": "agent", "author_id": "уволен", "body": "", "status": "working", "created_at": 4000, "updated_at": 4000}),
+    ];
+    assert_eq!(st.import_thread(&t, &msgs).unwrap(), (true, 3));
+    let got = st.get_thread("imp-1").unwrap();
+    assert_eq!(got.title, "Круизы из JSON");
+    assert_eq!(got.project_id.as_deref(), Some(p.id.as_str()));
+    assert_eq!(got.company_id, None, "неизвестная компания не выдумывается");
+    assert!(got.updated_at >= 4000, "чат встаёт по своему последнему сообщению");
+    let list = st.list_messages("imp-1", None, 10).unwrap();
+    assert_eq!(list.len(), 3);
+    let m3 = list.iter().find(|m| m.id == "m3").unwrap();
+    assert_eq!(m3.status.as_str(), "cancelled");
+    assert_eq!(m3.author_id, None);
+
+    // again: nothing changes
+    assert_eq!(st.import_thread(&t, &msgs).unwrap(), (false, 0));
+    // an existing chat keeps its own title; only its missing messages are added
+    let over = json!({"id": existing.id, "title": "Чужой"});
+    assert_eq!(st.import_thread(&over, &[json!({"id": "m9", "author_kind": "user", "body": "ещё"})]).unwrap(), (false, 1));
+    assert_eq!(st.get_thread(&existing.id).unwrap().title, "Свой");
+}

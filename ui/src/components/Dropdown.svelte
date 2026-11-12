@@ -15,6 +15,7 @@
     selected,
     ontoggle,
     children,
+    disabled = false,
   }: {
     value: string;
     options: Opt[];
@@ -27,6 +28,7 @@
     selected?: string[];
     ontoggle?: (id: string) => void;
     children?: Snippet<[Opt | undefined]>;
+    disabled?: boolean;
   } = $props();
 
   let open = $state(false);
@@ -72,7 +74,7 @@
 <svelte:window onmousedown={onDoc} onkeydown={onKey} onresize={() => (open = false)} />
 
 <div class="dd" class:block bind:this={root}>
-  <button bind:this={trigger} class="trigger" class:block aria-haspopup="listbox" aria-expanded={open} aria-label={label} onclick={show} onkeydown={(e) => { if (!open && ['ArrowDown', 'ArrowUp'].includes(e.key)) { e.preventDefault(); e.stopPropagation(); show(); } }}>
+  <button bind:this={trigger} class="trigger" class:block {disabled} type="button" aria-haspopup="listbox" aria-expanded={open} aria-label={label} onclick={show} onkeydown={(e) => { if (!open && ['ArrowDown', 'ArrowUp'].includes(e.key)) { e.preventDefault(); e.stopPropagation(); show(); } }}>
     {#if children}{@render children(current)}{:else}
       {#if current?.brand}<BrandMark id={current.brand} size={14} tint />{/if}
       <span class="tl">{current?.label ?? label}</span>
@@ -146,7 +148,11 @@
     background: var(--bg-hover);
     color: var(--fg);
   }
-  .trigger.block:hover {
+  .trigger:disabled {
+    opacity: 0.55;
+    cursor: default;
+  }
+  .trigger.block:hover:not(:disabled) {
     background: var(--bg-raised);
     border-color: var(--fg-3);
   }

@@ -1,4 +1,5 @@
 import { get, openEvents } from './api';
+import { readLink } from './link';
 import type { Account, Agent, Attention, Backend, Company, GitStatus, LiveRun, Message, Project, Thread } from './types';
 
 export type View =
@@ -21,6 +22,8 @@ const emptyAttention: Attention = { approvals: [], needs_user: [], running: [], 
 export const app = $state({
   ready: false,
   online: true,
+  /** Why the node is not reachable, when the desktop knows (it owns the tunnel to a server node). */
+  linkDetail: '',
   agents: [] as Agent[],
   projects: [] as Project[],
   companies: [] as Company[],
@@ -225,6 +228,8 @@ export function startEvents() {
     (online) => {
       const was = app.online;
       app.online = online;
+      if (online) app.linkDetail = '';
+      else readLink().then((l) => (app.linkDetail = l?.detail || ''));
       // After a reconnect, catch up on whatever was missed.
       if (online && !was && app.ready) {
         loadState().catch(() => {});

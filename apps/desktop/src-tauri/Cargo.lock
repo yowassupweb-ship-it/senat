@@ -3539,11 +3539,13 @@ name = "senate-desktop"
 version = "0.1.0"
 dependencies = [
  "senate-node",
+ "serde",
  "serde_json",
  "tauri",
  "tauri-build",
  "tauri-plugin-single-instance",
  "tokio",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

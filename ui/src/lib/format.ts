@@ -149,3 +149,80 @@ export const MODE_LABEL: Record<string, { label: string; hint: string }> = {
   edit: { label: 'Правки', hint: 'Правки в папке проекта — сразу; команды — с разрешения.' },
   auto: { label: 'Под ключ', hint: 'Работает сам и ничего не спрашивает. Остановится только на том, что уничтожает систему (форматирование, выключение).' },
 };
+
+/** Russian plural: plural(3, ['проект', 'проекта', 'проектов']) → 'проекта'. */
+export function plural(n: number, forms: [string, string, string]): string {
+  const a = Math.abs(n) % 100;
+  const b = a % 10;
+  if (a > 10 && a < 20) return forms[2];
+  if (b === 1) return forms[0];
+  if (b >= 2 && b <= 4) return forms[1];
+  return forms[2];
+}
+/** A number with its noun: count(3, ['проект', 'проекта', 'проектов']) → '3 проекта'. */
+export const count = (n: number | undefined | null, forms: [string, string, string]) => `${n ?? 0} ${plural(n ?? 0, forms)}`;
+export const N = {
+  task: ['задача', 'задачи', 'задач'] as [string, string, string],
+  project: ['проект', 'проекта', 'проектов'] as [string, string, string],
+  model: ['модель', 'модели', 'моделей'] as [string, string, string],
+  fact: ['знание', 'знания', 'знаний'] as [string, string, string],
+  file: ['файл', 'файла', 'файлов'] as [string, string, string],
+  step: ['шаг', 'шага', 'шагов'] as [string, string, string],
+  error: ['ошибка', 'ошибки', 'ошибок'] as [string, string, string],
+};
+/**
+ * Parts of a line joined by " · ", empty ones skipped. Use it instead of `{#if x} · {x}{/if}`: Svelte trims the
+ * space at the start of a block, and the dot ends up glued to the word before it.
+ */
+export const dots = (...parts: (string | number | false | null | undefined)[]) =>
+  parts.filter((p) => p !== false && p !== null && p !== undefined && String(p).trim() !== '').join(' · ');
+
+/** "7:13 PM" / "19:13" in a provider's message → "19:13". */
+function timeIn(text: string): string {
+  const m = /(d{1,2}):(d{2})s*(am|pm)?/i.exec(text);
+  if (!m) return '';
+  let h = +m[1];
+  const ap = (m[3] || '').toLowerCase();
+  if (ap === 'pm' && h < 12) h += 12;
+  if (ap === 'am' && h === 12) h = 0;
+  return `${String(h).padStart(2, '0')}:${m[2]}`;
+}
+
+/**
+ * A failed answer, said so a person knows what happened and what to do. The provider's own words are kept for the
+ * "details" fold: they are what support needs, but not what the person should have to read first.
+ */
+export function explainFailure(raw?: string | null): { title: string; hint: string } {
+  const t = (raw || '').trim();
+  const l = t.toLowerCase();
+  const has = (...w: string[]) => w.some((x) => l.includes(x));
+  if (has('usage limit', 'rate limit', 'too many requests', 'quota', 'limit reached', 'out of credits', 'purchase more credits')) {
+    const at = timeIn(t);
+    return { title: 'Исчерпан лимит подписки', hint: at ? `Модель снова будет доступна после ${at}. Можно повторить позже или переключить специалиста на другую модель.` : 'Подождите, пока лимит обновится, или переключите специалиста на другую модель.' };
+  }
+  if (has('unknown sessionid', 'session not found', 'no conversation found')) {
+    return { title: 'Сессия специалиста устарела', hint: 'Нажмите «Повторить»: он начнёт новую сессию и заново прочитает этот чат.' };
+  }
+  if (has('not logged in', 'unauthorized', 'invalid api key', 'authentication', 'please log in', 'login required', '401')) {
+    return { title: 'Специалист не вошёл в аккаунт модели', hint: 'Войдите заново в «Настройки → Агенты», затем повторите.' };
+  }
+  if (has('prompt is too long', 'context length', 'maximum context', 'context window', 'too many tokens')) {
+    return { title: 'Разговор стал слишком длинным', hint: 'Сожмите его командой /compact или начните новый чат: важное специалист возьмёт из памяти.' };
+  }
+  if (has('overloaded', '529', '503', 'service unavailable', 'server error', '500 internal')) {
+    return { title: 'Сервис модели перегружен', hint: 'Это на стороне провайдера и обычно проходит за минуту. Повторите чуть позже.' };
+  }
+  if (has('timed out', 'timeout', 'deadline')) {
+    return { title: 'Не дождались ответа', hint: 'Модель отвечала слишком долго. Повторите: обычно со второго раза получается.' };
+  }
+  if (has('econnreset', 'econnrefused', 'network', 'fetch failed', 'socket', 'dns', 'getaddrinfo')) {
+    return { title: 'Нет связи с сервисом модели', hint: 'Похоже на сбой сети. Повторите, когда связь вернётся.' };
+  }
+  if (has('не найден на этой машине', 'not found on this machine', 'is not recognized', 'enoent')) {
+    return { title: 'Программа специалиста не установлена', hint: t.length < 200 ? t : 'Установите её на компьютере, где он работает, и войдите в Настройках.' };
+  }
+  if (has('рабочая папка недоступна')) {
+    return { title: 'Рабочая папка недоступна', hint: 'Проверьте, что папка проекта существует, или выберите другую в настройках проекта.' };
+  }
+  return { title: 'Ответ не получен', hint: t ? '' : 'Причина неизвестна. Повторите — если не поможет, загляните в подробности.' };
+}

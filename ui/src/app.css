@@ -253,3 +253,34 @@ body { background: var(--bg); }
 .tabs button { border-radius: 6px; }
 .section > h2 { font-size: 11.5px; letter-spacing: 0.05em; text-transform: uppercase; color: var(--fg-3); font-weight: 600; }
 .section > h2 .count { letter-spacing: 0; text-transform: none; }
+
+/* ===================== type =====================
+   Inter is bundled, so the app reads the same on Windows and macOS. Its large x-height wants a
+   slightly smaller body and tighter display sizes, the way SF Pro is set. */
+body {
+  font-size: 13.5px;
+  line-height: 1.5;
+  font-feature-settings: 'cv05' 1, 'cv08' 1, 'ss03' 1;
+  font-optical-sizing: auto;
+}
+h1, h2, h3 { letter-spacing: -0.015em; }
+.mono, code, kbd, pre { font-feature-settings: normal; }
+/* numbers that sit in columns or badges do not jitter */
+.chip, .badge, .when, .cnt, .count, time { font-variant-numeric: tabular-nums; }
+
+/* controls read as macOS: hairline, quiet hover, the pressed state darker, never a white halo */
+.btn { font-size: 13px; letter-spacing: -0.003em; }
+.btn.primary { font-weight: 560; }
+.chip { height: 20px; padding: 0 7px; font-size: 11.5px; font-weight: 500; letter-spacing: 0; }
+.field { font-size: 13.5px; }
+.field:focus { border-color: var(--line-strong); box-shadow: 0 0 0 3px var(--accent-soft); }
+
+/* surfaces: a card lifts by a hairline, not by a cloud of shadow */
+.card.click:hover { box-shadow: 0 0 0 1px var(--line-strong), 0 4px 14px rgba(0, 0, 0, 0.12); }
+.list { box-shadow: var(--shadow-1); }
+.item .title { font-weight: 500; letter-spacing: -0.005em; }
+.item .sub { font-size: 12.5px; }
+/* section headings in sentence case, as in macOS Settings: no shouting capitals */
+.section > h2 { font-size: 13px; font-weight: 600; letter-spacing: -0.005em; text-transform: none; color: var(--fg-2); }
+.section > h2 .count { color: var(--fg-3); font-weight: 500; }
+.tabs button { font-size: 12.5px; font-weight: 500; }

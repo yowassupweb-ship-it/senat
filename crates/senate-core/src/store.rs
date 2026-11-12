@@ -869,6 +869,19 @@ impl Store {
         if let Some(v) = &p.agent_id {
             c.execute("UPDATE threads SET agent_id=? WHERE id=?", params![if v.is_empty() { None } else { Some(v) }, id])?;
         }
+        // A chat is filed under a company or a project; an empty string takes it out again.
+        if let Some(v) = &p.company_id {
+            if !v.is_empty() && c.query_row("SELECT 1 FROM companies WHERE id=?", [v], |_| Ok(())).optional()?.is_none() {
+                return Err(Error::not_found(format!("компания {v}")));
+            }
+            c.execute("UPDATE threads SET company_id=? WHERE id=?", params![if v.is_empty() { None } else { Some(v) }, id])?;
+        }
+        if let Some(v) = &p.project_id {
+            if !v.is_empty() && c.query_row("SELECT 1 FROM projects WHERE id=?", [v], |_| Ok(())).optional()?.is_none() {
+                return Err(Error::not_found(format!("проект {v}")));
+            }
+            c.execute("UPDATE threads SET project_id=? WHERE id=?", params![if v.is_empty() { None } else { Some(v) }, id])?;
+        }
         c.query_row(&format!("SELECT {THREAD_COLS} FROM threads WHERE id=?"), [id], thread_from)
             .optional()?
             .ok_or_else(|| Error::not_found(format!("чат {id}")))
@@ -2044,8 +2057,82 @@ impl Store {
         Ok(())
     }
 
+    /// A company by its exact name in any case. SQLite's lower() folds ASCII only, so «вокруг света» never met
+    /// «Вокруг света» there: names are compared here instead.
     pub fn company_by_name(&self, name: &str) -> Result<Option<Company>> {
-        Ok(self.lock().query_row(&format!("SELECT {COMPANY_COLS} FROM companies WHERE lower(name)=lower(?)"), [name.trim()], company_from).optional()?)
+        let want = fold_name(name);
+        Ok(if want.is_empty() { None } else { self.list_companies()?.into_iter().find(|c| fold_name(&c.name) == want) })
+    }
+
+    /// A company a person referred to: its exact name, else the only one whose name contains the words
+    /// («вокруг» → «Вокруг света»). For finding, never for creating.
+    pub fn company_like(&self, name: &str) -> Result<Option<Company>> {
+        if let Some(c) = self.company_by_name(name)? {
+            return Ok(Some(c));
+        }
+        let want = fold_name(name);
+        if want.is_empty() {
+            return Ok(None);
+        }
+        let partial: Vec<Company> = self.list_companies()?.into_iter().filter(|c| fold_name(&c.name).contains(&want)).collect();
+        Ok(if partial.len() == 1 { partial.into_iter().next() } else { None })
+    }
+
+    // ---------- import ----------
+    /// Bring a chat over from another Senate database (a local one that ran while the server was out of reach).
+    /// Additive only: an existing chat or message is never overwritten, ids are kept so a second run changes
+    /// nothing, and a reference to a project, company or specialist this database does not know is dropped
+    /// rather than invented. Returns (chat created, messages added).
+    pub fn import_thread(&self, t: &serde_json::Value, msgs: &[serde_json::Value]) -> Result<(bool, usize)> {
+        let s = |v: &serde_json::Value, k: &str| v[k].as_str().map(String::from);
+        let i = |v: &serde_json::Value, k: &str| v[k].as_i64();
+        let id = s(t, "id").filter(|x| !x.is_empty()).ok_or_else(|| Error::invalid("у чата нет id"))?;
+        let mut c = self.lock();
+        let known = |c: &Connection, table: &str, id: &Option<String>| -> rusqlite::Result<Option<String>> {
+            match id {
+                Some(x) if !x.is_empty() => Ok(c.query_row(&format!("SELECT id FROM {table} WHERE id=?"), [x], |r| r.get(0)).optional()?),
+                _ => Ok(None),
+            }
+        };
+        let tx = c.transaction()?;
+        let now = now_ms();
+        let project = known(&tx, "projects", &s(t, "project_id"))?;
+        let company = known(&tx, "companies", &s(t, "company_id"))?;
+        let agent = known(&tx, "agents", &s(t, "agent_id"))?;
+        let kind = s(t, "kind").filter(|k| k == "chat" || k == "forum").unwrap_or_else(|| "chat".into());
+        let created = tx.execute(
+            "INSERT OR IGNORE INTO threads(id,kind,project_id,agent_id,title,auto_title,archived,pinned,model,effort,mode,cli_sessions,created_at,updated_at,company_id,meta)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,'{}',?,?,?,?)",
+            params![
+                id, kind, project, agent, s(t, "title").unwrap_or_default(), i(t, "auto_title").unwrap_or(0), i(t, "archived").unwrap_or(0),
+                i(t, "pinned").unwrap_or(0), s(t, "model").unwrap_or_default(), s(t, "effort").unwrap_or_default(), s(t, "mode").unwrap_or_default(),
+                i(t, "created_at").unwrap_or(now), i(t, "updated_at").unwrap_or(now), company, s(t, "meta").unwrap_or_else(|| "{}".into())
+            ],
+        )? == 1;
+        let mut added = 0;
+        for m in msgs {
+            let Some(mid) = s(m, "id").filter(|x| !x.is_empty()) else { continue };
+            // a message that was mid-run when the other database stopped is not running here
+            let status = match s(m, "status").as_deref() {
+                Some("queued") | Some("working") => "cancelled".to_string(),
+                Some(x) => x.to_string(),
+                None => "done".into(),
+            };
+            let author = if s(m, "author_kind").as_deref() == Some("agent") { known(&tx, "agents", &s(m, "author_id"))? } else { s(m, "author_id") };
+            added += tx.execute(
+                "INSERT OR IGNORE INTO messages(id,thread_id,author_kind,author_id,body,props,status,session_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,NULL,?,?)",
+                params![
+                    mid, id, s(m, "author_kind").unwrap_or_else(|| "user".into()), author, s(m, "body").unwrap_or_default(),
+                    s(m, "props").unwrap_or_else(|| "{}".into()), status, i(m, "created_at").unwrap_or(now), i(m, "updated_at").unwrap_or(now)
+                ],
+            )?;
+        }
+        if added > 0 {
+            tx.execute("UPDATE threads SET updated_at=max(updated_at, (SELECT max(created_at) FROM messages WHERE thread_id=?)) WHERE id=?", params![id, id])?;
+        }
+        emit_c(&tx, "thread.imported", "thread", &id, "user", serde_json::json!({"created": created, "messages": added}))?;
+        tx.commit()?;
+        Ok((created, added))
     }
 
     // ---------- forum ----------
@@ -2523,6 +2610,22 @@ pub struct ThreadPatch {
     pub archived: Option<bool>,
     pub pinned: Option<bool>,
     pub agent_id: Option<String>,
+    /// Empty string takes the chat out of its company.
+    pub company_id: Option<String>,
+    /// Empty string takes the chat out of its project.
+    pub project_id: Option<String>,
+}
+
+/// A name as people type it: any case, any script, ё as е, runs of spaces and quotes ignored.
+pub fn fold_name(s: &str) -> String {
+    s.to_lowercase()
+        .replace('ё', "е")
+        .chars()
+        .filter(|c| !matches!(c, '«' | '»' | '"' | '\''))
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 #[derive(Debug, Clone, Default, serde::Deserialize)]

@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Step } from '../lib/types';
-  import { dur } from '../lib/format';
+  import { dots, dur } from '../lib/format';
   import Icon from './Icon.svelte';
   import Diff from './Diff.svelte';
 
@@ -42,7 +42,7 @@
     <span class="chev" class:rot={isOpen}><Icon name="right" size={13} /></span>
     <strong>{#if live}Работает{:else if tools.length}Выполнено: {tools.length} {plural(tools.length)}{:else}Ход работы{/if}</strong>
     <span class="faint">
-      {#if errors}{errors} с ошибкой{/if}{#if errors && durationMs && !live} · {/if}{#if !live && durationMs}{dur(durationMs)}{/if}
+      {dots(errors ? `${errors} с ошибкой` : '', !live && durationMs ? dur(durationMs) : '')}
     </span>
   </button>
 

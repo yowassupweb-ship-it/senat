@@ -2,7 +2,7 @@
   import { get, patch, post, put, upload } from '../lib/api';
   import { squarePng } from '../lib/image';
   import { app, go } from '../lib/store.svelte';
-  import { roleLabel, ROLE_TITLE, STATE_LABEL, timeAgo } from '../lib/format';
+  import { N, ROLE_TITLE, STATE_LABEL, count, dots, roleLabel, timeAgo } from '../lib/format';
   import { modelOptions, modelTitle } from '../lib/models';
   import type { Memory, Obligation, Project } from '../lib/types';
   import Avatar from '../components/Avatar.svelte';
@@ -234,7 +234,7 @@
         <div class="row">
           <label style="flex:1">Имя<input class="field" bind:value={draft.name} required placeholder="Например, Редактор" /></label>
           <label style="width:200px">Класс
-            <select class="field" bind:value={draft.role}>{#each roles as [k, v]}<option value={k}>{v}</option>{/each}</select></label>
+            <Dropdown block value={draft.role} options={roles.map(([k, v]) => ({ id: k, label: v }))} label="Роль" onpick={(v) => (draft.role = v)} /></label>
         </div>
         <label>Основная модель
           <Dropdown block value={draft.model_pref} options={models} label="Основная модель" onpick={(v) => (draft.model_pref = v)} /></label>
@@ -257,7 +257,7 @@
           <p class="muted clamp">{a.profile}</p>
           <div class="meta">
             <span class="chip">{#if a.model_pref}<BrandMark id={a.model_pref} size={12} tint />{modelTitle(app.accounts, a.model_pref)}{:else}Модель по умолчанию{/if}</span>
-            <span class="chip">{a.open_obligations ?? 0} задач</span>
+            {#if a.open_obligations}<span class="chip">{count(a.open_obligations, N.task)}</span>{/if}
             {#if a.running}<span class="chip accent">{a.running} в работе</span>{/if}
             {#if a.blocked}<span class="chip bad">{a.blocked} заблок.</span>{/if}
           </div>
@@ -267,9 +267,8 @@
   </Page>
 {:else if sheet}
   {@const a = sheet.agent}
-  <Page title="">
+  <Page title="" back={{ label: 'Специалисты', onclick: () => go({ kind: 'agents' }) }}>
     {#snippet actions()}
-      <button class="btn" onclick={() => go({ kind: 'agents' })}>Все специалисты</button>
       <button class="btn primary" onclick={chat}><Icon name="chat" size={14} />Написать</button>
     {/snippet}
 
@@ -297,11 +296,11 @@
           </form>
         {:else}
           <div class="nm"><h1>{a.name}</h1>{#if roleLabel(a)}<span class="chip">{roleLabel(a)}</span>{/if}<button class="icon-btn" onclick={startRename} aria-label="Изменить имя и username" title="Изменить имя и username"><Icon name="pencil" size={14} /></button></div>
-          <div class="faint handle">@{a.slug}{#if a.gender} · {GENDER[a.gender]}{/if}</div>
+          <div class="faint handle">{dots('@' + a.slug, a.gender && GENDER[a.gender])}</div>
         {/if}
         <div class="row" style="gap:6px;flex-wrap:wrap">
           <span class="chip">{#if a.model_pref}<BrandMark id={a.model_pref} size={12} tint />{/if}{modelTitle(app.accounts, a.model_pref)}</span>
-          <span class="chip">{sheet.projects.length} проектов</span>
+          <span class="chip">{count(sheet.projects.length, N.project)}</span>
           <span class="chip">{sheet.obligations.length} открытых задач</span>
         </div>
         <div class="xp" title="Опыт считается по проверяемому: выполненные задачи, проверенные знания, исправленные ошибки, сессии">
@@ -310,7 +309,7 @@
         </div>
       </div>
       <div class="swatches" aria-label="Цвет специалиста">
-        {#each accents as c}<button class="sw" class:on={a.accent === c} style="background:{c}" onclick={() => setAccent(c)} aria-label="Цвет {c}"></button>{/each}
+        {#each accents as c}<button class="sw" class:on={a.accent === c} style="--sw:{c}" onclick={() => setAccent(c)} aria-label="Цвет {c}" aria-pressed={a.accent === c}></button>{/each}
       </div>
     </section>
 
@@ -347,7 +346,7 @@
         <div class="section">
           <h2>Личность</h2>
           <div class="card pad form">
-            <textarea class="field" rows="6" bind:value={profile}></textarea>
+            <textarea class="field" rows="6" bind:value={profile} aria-label="Личность специалиста: как он работает и чем руководствуется"></textarea>
             <div class="row">
               <input class="field" bind:value={note} placeholder="Что изменили и почему (попадёт в историю)" />
               <button class="btn primary" disabled={profile === a.profile} onclick={saveProfile}>Сохранить</button>
@@ -363,7 +362,7 @@
                 <i class="cdot" style="background:{c.color}"></i>
                 <span class="grow"><span class="title">{c.name}</span>
                   <div class="sub">знаний о компании: {c.own_memory} · общих: {c.shared_memory} · решений: {c.decisions}</div></span>
-                <span class="chip">{c.done} задач</span><span class="chip">{c.projects} проектов</span></button></li>
+                <span class="chip">{count(c.done, N.task)}</span><span class="chip">{count(c.projects, N.project)}</span></button></li>
             {:else}<li class="empty-note">Пока нет</li>{/each}
           </ul>
         </div>
@@ -474,14 +473,6 @@
     position: relative;
     overflow: hidden;
   }
-  .hero-card::before {
-    content: '';
-    position: absolute;
-    inset: 0 0 auto 0;
-    height: 56px;
-    background: linear-gradient(color-mix(in srgb, var(--c) 18%, transparent), transparent);
-    pointer-events: none;
-  }
   .top {
     display: flex;
     gap: 12px;
@@ -549,9 +540,8 @@
     padding: 22px 24px;
     margin: 0 0 22px;
     border-radius: var(--radius-l);
-    background:
-      radial-gradient(120% 140% at 0% 0%, color-mix(in srgb, var(--c) 16%, transparent), transparent 60%),
-      var(--bg-raised);
+    /* the specialist's colour lives in the portrait ring; the surface stays graphite */
+    background: var(--bg-raised);
     box-shadow: var(--shadow-1);
   }
   .port.big :global(.av) {
@@ -603,7 +593,7 @@
     display: block;
     height: 100%;
     border-radius: 3px;
-    background: var(--c);
+    background: color-mix(in srgb, var(--c) 55%, var(--fg-2));
     transition: width 0.5s var(--ease);
   }
   .handle { font-size: 13px; margin: -2px 0 2px; }
@@ -618,20 +608,39 @@
   .gender button:focus-visible { outline: none; box-shadow: var(--focus-ring); }
   .swatches {
     display: grid;
-    grid-template-columns: repeat(5, 16px);
-    gap: 6px;
+    grid-template-columns: repeat(5, 24px);
+    gap: 0;
     align-self: flex-start;
   }
+  /* a 24 px target with a 16 px dot inside: easy to hit, still small to look at */
   .sw {
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    background: transparent !important;
+  }
+  .sw::before {
+    content: '';
     width: 16px;
     height: 16px;
     border-radius: 50%;
+    background: var(--sw);
     box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.12);
+    transition: transform 0.12s var(--ease);
   }
-  .sw.on {
+  .sw:hover::before {
+    transform: scale(1.12);
+  }
+  .sw.on::before {
     box-shadow:
       0 0 0 2px var(--bg-raised),
       0 0 0 3.5px var(--fg-2);
+  }
+  .sw:focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
   }
   .sheet {
     display: grid;

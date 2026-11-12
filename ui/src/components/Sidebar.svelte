@@ -61,10 +61,21 @@
     renaming = null;
     if (v && v !== t.title) await patch(`/api/threads/${t.id}`, { title: v });
   }
+  // Filing a chat: under any company but its current one, or out of the one it was filed under by hand.
+  const fileMenu = (t: Thread): MenuItem[] => {
+    if (t.kind !== 'chat') return [];
+    const here = companyOf(t);
+    const to: MenuItem[] = app.companies
+      .filter((c) => c.id !== here)
+      .map((c) => ({ label: `В компанию «${c.name}»`, icon: 'building', run: () => patch(`/api/threads/${t.id}`, { company_id: c.id }) }));
+    if (t.company_id) to.push({ label: 'Убрать из компании', icon: 'building', run: () => patch(`/api/threads/${t.id}`, { company_id: '' }) });
+    return to.length ? [{ sep: true }, ...to] : [];
+  };
   const threadMenu = (t: Thread): MenuItem[] => [
     { label: 'Открыть', icon: 'chat', run: () => go({ kind: 'chat', id: t.id }) },
     { label: 'Переименовать', icon: 'pencil', run: () => startRename(t) },
     { label: t.pinned ? 'Открепить' : 'Закрепить', icon: 'pin', run: () => patch(`/api/threads/${t.id}`, { pinned: !t.pinned }) },
+    ...fileMenu(t),
     { sep: true },
     { label: 'Копировать название', icon: 'copy', run: () => navigator.clipboard?.writeText(t.title || '') },
     { sep: true },
@@ -121,7 +132,7 @@
 <nav bind:this={navigation} class="side" class:open={app.sidebar} aria-label="Навигация">
   <div class="brand" hidden={chrome}>
     {#if !chrome}<img class="logo" src="/logo.png" width="52" height="52" alt="Senate" />{/if}
-    {#if !app.online}<span class="chip bad" title="Нет связи с нодой">офлайн</span>{/if}
+    {#if !app.online}<span class="chip bad" title={app.linkDetail || 'Нет связи с нодой'}>офлайн</span>{/if}
     <span class="grow"></span>
     <button class="icon-btn" onclick={() => (app.palette = true)} aria-label="Поиск и команды" title="Поиск (Ctrl+K)"><Icon name="search" size={15} /></button>
   </div>
@@ -409,6 +420,25 @@
   .chat.on, .nav.on { background: var(--bg-active); color: var(--fg); font-weight: 550; }
   .chat.on .when { color: var(--fg-2); }
   .foot { padding-top: 2px; }
+
+  /* Finder hierarchy: a group heading is quieter than the rows under it; rows are regular weight
+     and only the open one is set heavier. */
+  .chat { min-height: 30px; margin-bottom: 1px; font-size: 13px; padding-top: 4px; padding-bottom: 4px; }
+  .chat .t { letter-spacing: -0.003em; }
+  .chat.lounge { font-weight: 500; min-height: 32px; gap: 9px; color: var(--fg); }
+  .chat.lounge :global(svg) { color: var(--fg-2); }
+  .gh, .gtoggle { font-size: 11.5px; font-weight: 600; color: var(--fg-3); padding: 3px 6px; gap: 6px; }
+  .gtoggle :global(svg) { opacity: 0.85; }
+  .group { margin-top: 12px; }
+  .group + .group { margin-top: 10px; }
+  .when { font-size: 11px; color: var(--fg-3); }
+  .chat:hover .when { color: var(--fg-2); }
+  .new { height: 30px; font-size: 13px; font-weight: 550; gap: 7px; }
+  .new.ghost { font-weight: 500; }
+  .search { height: 30px; margin-bottom: 10px; font-size: 13px; }
+  .nav { height: 27px; font-size: 13px; }
+  .foot { gap: 0; padding: 6px 0 0; }
+  .badge { font-size: 11px; height: 17px; min-width: 17px; }
   @media (max-width: 760px) {
     .side { display: none; position: fixed; inset: 0 auto 0 0; z-index: 60; width: min(290px, 90vw); box-shadow: var(--shadow-2); }
     .side.open { display: flex; }

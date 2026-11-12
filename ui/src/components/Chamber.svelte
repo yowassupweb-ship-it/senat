@@ -65,34 +65,53 @@
     }
     return null;
   });
+
+  // Without the ring the pods wrap in rows, and the rows are made even: nine specialists sit as 5 + 4, not 8 + 1 with
+  // one left alone underneath. The width is measured on the outer box, so the rows can widen again with the window.
+  const GAP = 8;
+  const gridWidth = $derived.by(() => {
+    const n = agents.length;
+    if (!width || n < 1) return 0;
+    const perRow = Math.max(1, Math.floor((width + GAP) / (CARD_W + GAP)));
+    const rows = Math.ceil(n / perRow);
+    const cols = Math.ceil(n / rows);
+    return cols * (CARD_W + GAP) - GAP;
+  });
 </script>
+
+{#snippet pod(a: Agent, i: number)}
+  {@const w = working(a)}
+  <button
+    class="pod"
+    class:on={isOn(a.id)}
+    style={ring ? `left:${ring.cx + ring.pts[i].x - CARD_W / 2}px;top:${ring.top + ring.pts[i].y - CARD_H / 2}px;width:${CARD_W}px;height:${CARD_H}px;--i:${i}` : `--i:${i}`}
+    aria-pressed={isOn(a.id)}
+    title={w ? `${a.name}: ${w.hint || 'работает'}` : `${a.name}${roleLabel(a) ? ' · ' + roleLabel(a) : ''} · уровень ${a.level ?? 1}`}
+    onclick={() => onpick(a.id)}
+  >
+    <span class="av"><Avatar name={a.name} color={a.accent} size={52} progress={xpFraction(a)} /><b class="lv" aria-label="Уровень">{a.level ?? 1}</b>{#if w}<i class="dot" aria-label="работает"></i>{/if}</span>
+    <span class="nm">{a.name}</span>
+  </button>
+{/snippet}
 
 <div class="hall">
   <h1>{hello}{name ? `, ${name}` : ''}</h1>
   <p class="sub">Сенат в сборе. {title}</p>
 
-  <div class="seats" class:ring={!!ring} bind:clientWidth={width} style={ring ? `height:${ring.height}px` : ''} role="group" aria-label="Специалисты">
-    {#if ring}
-      <svg class="tiers" width={width} height={ring.height} aria-hidden="true" style="--tail:{ring.tail}px">
-        {#each ring.rings as r, k}
-          <circle cx={ring.cx} cy={ring.top + ring.R} {r} fill="none" stroke="currentColor" stroke-opacity={0.12} stroke-linecap="round" />
-        {/each}
-      </svg>
-    {/if}
-    {#each agents as a, i (a.id)}
-      {@const w = working(a)}
-      <button
-        class="pod"
-        class:on={isOn(a.id)}
-        style={ring ? `left:${ring.cx + ring.pts[i].x - CARD_W / 2}px;top:${ring.top + ring.pts[i].y - CARD_H / 2}px;width:${CARD_W}px;height:${CARD_H}px;--i:${i}` : `--i:${i}`}
-        aria-pressed={isOn(a.id)}
-        title={w ? `${a.name}: ${w.hint || 'работает'}` : `${a.name}${roleLabel(a) ? ' · ' + roleLabel(a) : ''} · уровень ${a.level ?? 1}`}
-        onclick={() => onpick(a.id)}
-      >
-        <span class="av"><Avatar name={a.name} color={a.accent} size={52} progress={xpFraction(a)} /><b class="lv" aria-label="Уровень">{a.level ?? 1}</b>{#if w}<i class="dot" aria-label="работает"></i>{/if}</span>
-        <span class="nm">{a.name}</span>
-      </button>
-    {/each}
+  <!-- The width is measured on this full-width stage, never on the seats: in rows the seats are narrowed to even
+       them out, and a narrowed box must not be what decides how wide the rows may be. One list of pods for both
+       layouts, so switching between the ring and the rows does not rebuild them (their photos would blink). -->
+  <div class="stage" bind:clientWidth={width}>
+    <div class="seats" class:ring={!!ring} style={ring ? `height:${ring.height}px` : gridWidth ? `max-width:${gridWidth}px` : ''} role="group" aria-label="Специалисты">
+      {#if ring}
+        <svg class="tiers" width={width} height={ring.height} aria-hidden="true" style="--tail:{ring.tail}px">
+          {#each ring.rings as r, k}
+            <circle cx={ring.cx} cy={ring.top + ring.R} {r} fill="none" stroke="currentColor" stroke-opacity={0.12} stroke-linecap="round" />
+          {/each}
+        </svg>
+      {/if}
+      {#each agents as a, i (a.id)}{@render pod(a, i)}{/each}
+    </div>
   </div>
 </div>
 
@@ -101,8 +120,9 @@
   h1 { margin: 0; font-size: clamp(26px, 3vw, 34px); line-height: 1.1; font-weight: 650; letter-spacing: -0.03em; text-align: center; }
   .sub { margin: 6px 0 26px; font-size: 15px; color: var(--fg-2); text-align: center; }
 
-  .seats { position: relative; display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; color: var(--fg); }
-  .seats.ring { display: block; }
+  .stage { width: 100%; }
+  .seats { position: relative; color: var(--fg); display: flex; flex-wrap: wrap; justify-content: center; gap: 14px 8px; margin: 0 auto; }
+  .seats.ring { display: block; max-width: none; }
   .tiers { position: absolute; left: 0; top: 0; pointer-events: none; -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - var(--tail)), transparent); mask-image: linear-gradient(to bottom, #000 calc(100% - var(--tail)), transparent); }
   .pod {
     display: flex;
@@ -130,7 +150,7 @@
   .pod.on .nm { text-decoration: underline; text-underline-offset: 3px; text-decoration-thickness: 1.5px; }
   .av { position: relative; display: grid; isolation: isolate; transition: transform 0.12s var(--ease); }
   .av :global(.av) { z-index: 1; }
-  .lv { position: absolute; z-index: 3; right: -9px; top: -7px; min-width: 22px; height: 22px; padding: 0 5px; border-radius: 11px; display: grid; place-items: center; font-size: 12px; font-weight: 700; color: #1b1405; background: #e8b64c; box-shadow: 0 0 0 2px var(--bg); }
+  .lv { position: absolute; z-index: 3; right: -5px; top: -4px; min-width: 19px; height: 19px; padding: 0 5px; border-radius: 10px; display: grid; place-items: center; font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--bg); background: var(--fg); box-shadow: 0 0 0 2px var(--bg); }
   .dot { position: absolute; z-index: 3; right: -1px; bottom: -1px; width: 9px; height: 9px; border-radius: 50%; background: var(--warn, #d29922); box-shadow: 0 0 0 2px var(--bg); }
   .nm {
     font-size: 11.5px;

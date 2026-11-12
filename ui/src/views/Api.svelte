@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Dropdown from '../components/Dropdown.svelte';
   import { del, get, patch, post } from '../lib/api';
   import { agentById, onEvent } from '../lib/store.svelte';
   import type { Integration } from '../lib/types';
@@ -183,7 +184,7 @@
     <label>Адрес API<input class="field mono" bind:value={form.base_url} required placeholder="https://api.example.com" /></label>
     <div class="row2">
       <label>Авторизация
-        <select class="field" bind:value={form.auth_type}>{#each Object.entries(authLabel) as [k, v]}<option value={k}>{v}</option>{/each}</select></label>
+        <Dropdown block value={form.auth_type} options={Object.entries(authLabel).map(([k, v]) => ({ id: k, label: v as string }))} label="Вход" onpick={(v) => (form.auth_type = v as typeof form.auth_type)} /></label>
       {#if form.auth_type === 'header' || form.auth_type === 'query'}<label>Имя {form.auth_type === 'header' ? 'заголовка' : 'параметра'}<input class="field mono" bind:value={form.auth_name} placeholder={form.auth_type === 'header' ? 'X-API-Key' : 'api_key'} /></label>{/if}
     </div>
     {#if form.auth_type !== 'none'}
@@ -191,7 +192,7 @@
         <input class="field mono" type="password" autocomplete="off" bind:value={form.secret} placeholder={editing ? '••••••••' : ''} /></label>
     {/if}
     <label>Правило записи
-      <select class="field" bind:value={form.write_mode}>{#each Object.entries(writeLabel) as [k, v]}<option value={k}>{v}</option>{/each}</select></label>
+      <Dropdown block value={form.write_mode} options={Object.entries(writeLabel).map(([k, v]) => ({ id: k, label: v as string }))} label="Запись" onpick={(v) => (form.write_mode = v as typeof form.write_mode)} /></label>
     <label>Что умеет API и как его вызывать<textarea class="field" rows="3" bind:value={form.docs}></textarea></label>
     <div class="trust"><Switch on={form.shared} label="Всем" onchange={(v) => (form.shared = v)} /><span><b>Выдать всем специалистам</b></span></div>
     {#if !form.shared}<div><span class="lbl">Кому выдать</span><AgentChips selected={form.agents} onchange={(ids) => (form.agents = ids)} /></div>{/if}

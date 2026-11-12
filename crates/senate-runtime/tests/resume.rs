@@ -53,3 +53,30 @@ async fn without_a_resume_nothing_is_retried() {
     assert!(out.failure.is_none());
     assert!(t.elapsed() < std::time::Duration::from_secs(4));
 }
+
+#[tokio::test]
+async fn a_lost_session_goes_on_in_a_fresh_one_at_once() {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    let (_c, crx) = tokio::sync::watch::channel(false);
+    let mut s = spec(Some("session_5823"));
+    s.prompt = "СЕССИЯ-ПОТЕРЯНА: ответь коротко".into();
+    let t = std::time::Instant::now();
+    let out = run(s, &AllowAll, tx, crx).await;
+    assert!(out.failure.is_none(), "the person sees an answer, not «Unknown sessionId»: {:?}", out.failure);
+    assert!(!out.text.is_empty());
+    assert!(t.elapsed() < std::time::Duration::from_secs(4), "nothing to wait for when the session is gone");
+}
+
+#[test]
+fn every_cli_s_way_of_saying_the_session_is_gone_is_recognised() {
+    use senate_runtime::{session_is_lost, Outcome};
+    let lost = |f: &str| session_is_lost(&Outcome { failure: Some(f.into()), ..Default::default() });
+    assert!(lost("session not found: Invalid params: Unknown sessionId: session_5823")); // Kimi
+    assert!(lost("No conversation found with session ID: 0f3c")); // Claude
+    assert!(lost("thread/resume failed: session abc does not exist")); // Codex-like
+    assert!(!lost("You've hit your usage limit"), "a limit is not a lost session");
+    assert!(!lost("thread abc already has an active writer"), "a held session has its own path");
+    // a turn that already answered something is never thrown away
+    assert!(!session_is_lost(&Outcome { failure: Some("session not found".into()), text: "часть ответа".into(), ..Default::default() }));
+}

@@ -1,7 +1,8 @@
 <script lang="ts">
+  import Dropdown from '../components/Dropdown.svelte';
   import { get, patch, post, put } from '../lib/api';
   import { app, go } from '../lib/store.svelte';
-  import { MODE_LABEL, STATE_LABEL, timeAgo } from '../lib/format';
+  import { MODE_LABEL, N, STATE_LABEL, count, timeAgo } from '../lib/format';
   import type { Agent, Decision, Obligation, Project, Thread } from '../lib/types';
   import Avatar from '../components/Avatar.svelte';
   import FolderPicker from '../components/FolderPicker.svelte';
@@ -93,7 +94,7 @@
         <label>Название<input class="field" bind:value={draft.name} required /></label>
         <label>Цель<textarea class="field" rows="2" bind:value={draft.goal}></textarea></label>
         <label>Компания
-          <select class="field" bind:value={draft.company_id}><option value="">Без компании</option>{#each app.companies as c}<option value={c.id}>{c.name}</option>{/each}</select></label>
+          <Dropdown block value={draft.company_id} options={[{ id: '', label: 'Без компании' }, ...app.companies.map((c) => ({ id: c.id, label: c.name }))]} label="Компания" onpick={(v) => (draft.company_id = v)} /></label>
         <label>Рабочая папка <small>необязательно — без неё специалисты работают без доступа к вашим файлам</small>
           <div class="row"><input class="field" bind:value={draft.root_path} placeholder="Не выбрана" /><button class="btn" type="button" onclick={() => (picking = 'new')}><Icon name="folder" size={14} />Выбрать</button></div></label>
         <div class="row"><button class="btn primary" type="submit">Создать</button><button class="btn" type="button" onclick={() => (creating = false)}>Отмена</button></div>
@@ -102,19 +103,18 @@
     {/if}
     <div class="cards">
       {#each app.projects as p (p.id)}
-        <button class="card pad click" onclick={() => go({ kind: 'projects', id: p.id })}>
+        <button class="card pad click pcard" onclick={() => go({ kind: 'projects', id: p.id })}>
           <div class="row"><Icon name="folder" size={16} /><b>{p.name}</b></div>
-          <p class="muted clamp">{p.goal || 'Цель не задана'}</p>
-          <div class="row"><span class="chip">{p.open_obligations ?? 0} задач</span>{#if p.root_path}<span class="chip ok">папка</span>{/if}
+          <p class="clamp" class:muted={!!p.goal} class:faint={!p.goal}>{p.goal || 'Цель не задана'}</p>
+          <div class="row">{#if p.open_obligations}<span class="chip">{count(p.open_obligations, N.task)}</span>{/if}{#if p.root_path}<span class="chip" title={p.root_path}>папка подключена</span>{/if}
             <span class="row" style="margin-left:auto;gap:0">{#each (p.members ?? []).slice(0, 4) as a (a.id)}<Avatar name={a.name} color={a.accent} size={20} />{/each}</span></div>
         </button>
       {:else}<p class="empty-note">Проектов пока нет.</p>{/each}
     </div>
   </Page>
 {:else if d}
-  <Page title={d.project.name} sub={d.project.root_path || 'Без рабочей папки'}>
+  <Page title={d.project.name} sub={d.project.root_path || 'Без рабочей папки'} back={{ label: 'Проекты', onclick: () => go({ kind: 'projects' }) }}>
     {#snippet actions()}
-      <button class="btn" onclick={() => go({ kind: 'projects' })}>Все проекты</button>
       <button class="btn primary" onclick={() => go({ kind: 'new', project: id })}><Icon name="chat" size={14} />Новый чат</button>
     {/snippet}
     <div class="split">
@@ -168,16 +168,13 @@
         <div class="section">
           <h2>Рабочая папка</h2>
           <div class="card pad form">
-            <div class="mono" style="font-size:12.5px;overflow-wrap:anywhere">{d.project.root_path || 'не выбрана'}</div>
+            {#if d.project.root_path}<div class="mono" style="font-size:12.5px;overflow-wrap:anywhere">{d.project.root_path}</div>{:else}<div class="faint" style="font-size:13px">Не выбрана — специалисты работают без доступа к вашим файлам</div>{/if}
             <div class="row"><button class="btn" onclick={() => (picking = 'edit')}><Icon name="folder" size={14} />Выбрать…</button>
               {#if d.project.root_path}<button class="btn" onclick={() => save({ root_path: '' })}>Отвязать</button>{/if}</div>
             <label>Компания
-              <select class="field" value={d.project.company_id ?? ''} onchange={(e) => save({ company_id: e.currentTarget.value })}>
-                <option value="">Без компании</option>{#each app.companies as c}<option value={c.id}>{c.name}</option>{/each}</select></label>
+              <Dropdown block value={d.project.company_id ?? ''} options={[{ id: '', label: 'Без компании' }, ...app.companies.map((c) => ({ id: c.id, label: c.name }))]} label="Компания" onpick={(v) => save({ company_id: v })} /></label>
             <label>Режим по умолчанию
-              <select class="field" value={d.project.mode} onchange={(e) => save({ mode: e.currentTarget.value })}>
-                {#each Object.entries(MODE_LABEL) as [k, v]}<option value={k}>{v.label} — {v.hint}</option>{/each}
-              </select></label>
+              <Dropdown block value={d.project.mode} options={Object.entries(MODE_LABEL).map(([k, v]) => ({ id: k, label: v.label, hint: v.hint }))} label="Режим по умолчанию" onpick={(v) => save({ mode: v })} /></label>
           </div>
           {#if error}<p class="bad">{error}</p>{/if}
         </div>
@@ -207,6 +204,10 @@
 {/if}
 
 <style>
+  /* a card reads from the top: names line up across a row whatever the text below them */
+  .pcard { display: flex; flex-direction: column; justify-content: flex-start; align-items: stretch; gap: 6px; }
+  .pcard p { margin: 0; }
+  .pcard > .row:last-child:not(:empty) { margin-top: auto; padding-top: 4px; }
   .clamp {
     display: -webkit-box;
     -webkit-line-clamp: 2;

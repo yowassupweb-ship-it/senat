@@ -17,6 +17,10 @@ pub async fn run(spec: RunSpec, approver: &dyn Approver, tx: EventTx, mut cancel
     if spec.resume.is_some() && spec.prompt.contains("СЕССИЯ-ЗАНЯТА") {
         return Outcome { failure: Some("thread/resume failed: thread abc already has an active writer (code -32600)".into()), ..Default::default() };
     }
+    // Test hook: the CLI has forgotten the session altogether (Kimi's words for it).
+    if spec.resume.is_some() && spec.prompt.contains("СЕССИЯ-ПОТЕРЯНА") {
+        return Outcome { failure: Some("session not found: Invalid params: Unknown sessionId: session_5823".into()), ..Default::default() };
+    }
     let send = |p: Progress| {
         let _ = tx.send(Event::Progress(Box::new(p)));
     };

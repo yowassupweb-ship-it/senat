@@ -1,13 +1,25 @@
 <script lang="ts">
+  import Dropdown from '../components/Dropdown.svelte';
   import { get, post } from '../lib/api';
   import { agentById, app, projectById } from '../lib/store.svelte';
-  import { timeAgo } from '../lib/format';
+  import { dots, timeAgo } from '../lib/format';
   import type { Memory } from '../lib/types';
   import Page from '../components/Page.svelte';
+
+  // Where a fact came from, in words: an automatic note from a run, a chat, or the person.
+  function sourceLabel(src?: string | null): string {
+    if (!src) return '';
+    if (src.startsWith('auto')) return 'записано само';
+    if (src.startsWith('chat') || src.startsWith('thread')) return 'из чата';
+    if (src === 'user' || src === 'manual') return 'вручную';
+    return src.length > 24 ? '' : 'источник: ' + src;
+  }
 
   let level = $state<'all' | 'personal' | 'project' | 'collective'>('all');
   let q = $state('');
   let items = $state<Memory[]>([]);
+  // long facts are folded to a few lines; a click unfolds one
+  let open = $state<Record<string, boolean>>({});
   let adding = $state(false);
   let draft = $state({ body: '', level: 'collective', kind: 'preference', source: 'user', project_id: '', agent_id: '' });
   let error = $state('');
@@ -81,13 +93,13 @@
       <label>Что запомнить<textarea class="field" rows="2" bind:value={draft.body} required></textarea></label>
       <div class="row">
         <label style="flex:1">Уровень
-          <select class="field" bind:value={draft.level}><option value="collective">Общая (всем)</option><option value="project">Проект</option><option value="personal">Личная</option></select></label>
+          <Dropdown block value={draft.level} options={[{ id: 'collective', label: 'Общая', hint: 'видят все специалисты' }, { id: 'project', label: 'Проекта', hint: 'видят те, кто работает в проекте' }, { id: 'personal', label: 'Личная', hint: 'только у одного специалиста' }]} label="Чья" onpick={(v) => (draft.level = v)} /></label>
         <label style="flex:1">Вид
-          <select class="field" bind:value={draft.kind}>{#each Object.entries(kindLabel) as [k, v]}<option value={k}>{v}</option>{/each}</select></label>
-        {#if draft.level === 'project'}<label style="flex:1">Проект<select class="field" bind:value={draft.project_id} required><option value="">—</option>{#each app.projects as p}<option value={p.id}>{p.name}</option>{/each}</select></label>{/if}
-        {#if draft.level === 'personal'}<label style="flex:1">Специалист<select class="field" bind:value={draft.agent_id} required><option value="">—</option>{#each app.agents as a}<option value={a.id}>{a.name}</option>{/each}</select></label>{/if}
+          <Dropdown block value={draft.kind} options={Object.entries(kindLabel).map(([k, v]) => ({ id: k, label: v as string }))} label="Вид" onpick={(v) => (draft.kind = v)} /></label>
+        {#if draft.level === 'project'}<label style="flex:1">Проект<Dropdown block value={draft.project_id} options={[{ id: '', label: 'Выберите проект', disabled: true }, ...app.projects.map((p) => ({ id: p.id, label: p.name }))]} label="Проект" onpick={(v) => (draft.project_id = v)} /></label>{/if}
+        {#if draft.level === 'personal'}<label style="flex:1">Специалист<Dropdown block value={draft.agent_id} options={[{ id: '', label: 'Выберите специалиста', disabled: true }, ...app.agents.map((a) => ({ id: a.id, label: a.name }))]} label="Специалист" onpick={(v) => (draft.agent_id = v)} /></label>{/if}
       </div>
-      <div class="row"><button class="btn primary" type="submit">Сохранить</button><button class="btn" type="button" onclick={() => (adding = false)}>Отмена</button></div>
+      <div class="row"><button class="btn primary" type="submit" disabled={!draft.body.trim() || (draft.level === 'project' && !draft.project_id) || (draft.level === 'personal' && !draft.agent_id)}>Сохранить</button><button class="btn" type="button" onclick={() => (adding = false)}>Отмена</button></div>
     </form>
   {/if}
 
@@ -103,24 +115,55 @@
 
   <ul class="list">
     {#each items as m (m.id)}
-      <li class="item" style="align-items:flex-start">
-        <span class="grow">
-          <div style="white-space:pre-wrap">{m.body}</div>
-          <div class="sub" style="margin-top:3px">
-            {levelLabel[m.level]}{#if m.agent_id} · {agentById(m.agent_id)?.name}{/if}{#if m.project_id} · {projectById(m.project_id)?.name}{/if}
-            {#if m.source} · источник: {m.source.length > 24 ? m.source.slice(0, 8) : m.source}{/if}{#if m.verification} · основание: {m.verification}{/if} · {timeAgo(m.updated_at)}
-          </div>
-        </span>
-        <span class="chip {m.kind === 'verified' ? 'ok' : m.kind === 'error' ? 'bad' : m.kind === 'hypothesis' ? 'warn' : ''}">{kindLabel[m.kind]}</span>
-        <span class="row" style="gap:2px">
+      <li class="item mem">
+        <div class="top">
+          <span class="grow">
+            {#if m.body.length > 320 && !open[m.id]}
+              <button class="body clamp" onclick={() => (open[m.id] = true)} title="Показать полностью" aria-expanded="false">{m.body}</button>
+            {:else}
+              <div class="body">{m.body}</div>
+              {#if m.body.length > 320}<button class="more" onclick={() => (open[m.id] = false)} aria-expanded="true">Свернуть</button>{/if}
+            {/if}
+          </span>
+          <span class="chip {m.kind === 'verified' ? 'ok' : m.kind === 'error' ? 'bad' : m.kind === 'hypothesis' ? 'warn' : ''}">{kindLabel[m.kind]}</span>
+        </div>
+        <div class="bottom">
+          <span class="sub grow">
+            {dots(levelLabel[m.level], m.agent_id && agentById(m.agent_id)?.name, m.project_id && projectById(m.project_id)?.name, sourceLabel(m.source), m.verification && 'основание: ' + m.verification, timeAgo(m.updated_at))}
+          </span>
+        <span class="row acts" style="gap:2px">
           {#if m.kind !== 'verified'}<button class="btn sm" onclick={() => act(m, 'verify')}>Проверено</button>{/if}
           {#if m.kind === 'verified' && m.level !== 'collective'}<button class="btn sm" onclick={() => act(m, 'promote')}>В общую</button>{/if}
           <button class="btn sm" onclick={() => act(m, 'correct')}>Исправить</button>
           <button class="btn sm danger" onclick={() => act(m, 'archive')}>Убрать</button>
         </span>
+        </div>
       </li>
     {:else}
       <li class="empty-note">{q ? 'Ничего не нашлось.' : 'Пока ничего не сохранено. Специалисты записывают сюда опыт по ходу работы, а вы можете добавить своё.'}</li>
     {/each}
   </ul>
 </Page>
+
+<style>
+  /* the text takes the whole row; the verdict sits at the right edge; actions share the quiet meta line */
+  .mem { flex-direction: column; align-items: stretch; gap: 6px; padding: 12px 16px; }
+  .top, .bottom { display: flex; gap: 14px; min-width: 0; }
+  .top { align-items: flex-start; }
+  .top .chip { margin-top: 1px; flex: none; }
+  .bottom { align-items: center; min-height: 24px; }
+  .bottom .sub { min-width: 0; }
+  .acts { flex: none; flex-wrap: nowrap; }
+  @media (max-width: 640px) { .bottom { flex-wrap: wrap; } .acts { flex-wrap: wrap; } .bottom .sub { flex-basis: 100%; } }
+  .body { white-space: pre-wrap; text-align: left; font: inherit; color: inherit; line-height: 1.5; }
+  .clamp { display: -webkit-box; -webkit-line-clamp: 4; line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; width: 100%; cursor: pointer; border-radius: 4px; }
+  .clamp:hover { color: var(--fg); }
+  .clamp:focus-visible, .more:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+  .more { margin-top: 2px; font-size: 12px; color: var(--fg-3); }
+  .more:hover { color: var(--fg); }
+  /* actions show up where the pointer is, as in macOS lists; on touch they stay visible */
+  @media (hover: hover) {
+    .mem .acts { opacity: 0; transition: opacity 0.12s var(--ease); }
+    .mem:hover .acts, .mem:focus-within .acts { opacity: 1; }
+  }
+</style>

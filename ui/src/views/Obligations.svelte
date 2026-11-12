@@ -1,7 +1,8 @@
 <script lang="ts">
+  import Dropdown from '../components/Dropdown.svelte';
   import { get, patch, post } from '../lib/api';
   import { agentById, app, go, onEvent, projectById } from '../lib/store.svelte';
-  import { dateTime, STATE_LABEL, timeAgo } from '../lib/format';
+  import { STATE_LABEL, dateTime, dots, timeAgo } from '../lib/format';
   import type { Obligation } from '../lib/types';
   import Avatar from '../components/Avatar.svelte';
   import Icon from '../components/Icon.svelte';
@@ -92,6 +93,52 @@
   const finished = $derived(all.filter((o) => o.state === 'done' || o.state === 'cancelled'));
   const att = $derived(app.attention);
   const needs = $derived(att.approvals.length + att.needs_user.length + att.proposed_decisions.length);
+  // Triage: what waits for the person, by project, picked in bulk. A queue of sixty is sorted, not read one by one.
+  let picked = $state<string[]>([]);
+  let busy = $state(false);
+  let bulkError = $state('');
+  const toggle = (oid: string) => (picked = picked.includes(oid) ? picked.filter((x) => x !== oid) : [...picked, oid]);
+  const pickedReview = $derived(att.needs_user.filter((o) => picked.includes(o.id) && o.state === 'review').map((o) => o.id));
+  $effect(() => {
+    // a task that left the queue is no longer picked
+    const ids = new Set(att.needs_user.map((o) => o.id));
+    if (picked.some((x) => !ids.has(x))) picked = picked.filter((x) => ids.has(x));
+  });
+  const groups = $derived.by(() => {
+    const map = new Map<string, { key: string; name: string; items: Obligation[] }>();
+    for (const o of att.needs_user) {
+      const key = o.project_id ?? '';
+      const name = (o.project_id && projectById(o.project_id)?.name) || 'Без проекта';
+      if (!map.has(key)) map.set(key, { key, name, items: [] });
+      map.get(key)!.items.push(o);
+    }
+    return [...map.values()].sort((a, b) => b.items.length - a.items.length || a.name.localeCompare(b.name, 'ru'));
+  });
+  async function bulk(to: string, extra: Record<string, unknown> = {}, ids?: string[]) {
+    // accepting and returning apply to results under review; the rest of a selection is left as it is
+    const list = ids ?? (to === 'cancelled' ? picked : pickedReview);
+    if (!list.length) return;
+    busy = true;
+    bulkError = '';
+    const failed: string[] = [];
+    const failedIds: string[] = [];
+    for (const oid of list) {
+      try {
+        await post(`/api/obligations/${oid}/transition`, { to, ...extra });
+      } catch (e: any) {
+        failedIds.push(oid);
+        failed.push(`${att.needs_user.find((o) => o.id === oid)?.title ?? oid}: ${e.message}`);
+      }
+    }
+    busy = false;
+    picked = picked.filter((x) => !list.includes(x) || failedIds.includes(x));
+    if (failed.length) bulkError = `Не получилось (${failed.length}): ${failed.slice(0, 3).join('; ')}`;
+    await loadAll();
+  }
+  function bulkCancel() {
+    const reason = prompt(`Отменить задачи (${picked.length}). Причина:`);
+    if (reason?.trim()) bulk('cancelled', { outcome: reason.trim() });
+  }
   const ownerName = (o: Obligation) => agentById(o.owner_id)?.name ?? 'без ответственного';
   const waitText = (w: any) => (!w ? '' : w.type === 'time' ? `до ${dateTime(w.at)}` : w.type === 'user' ? 'ответа пользователя' : w.type === 'obligation' ? 'другой задачи' : `события ${w.kind}`);
   const actionLabel: Record<string, string> = {
@@ -113,17 +160,36 @@
     <span class="dot {o.state}"></span>
     <span class="grow">
       <span class="title">{o.title}</span>
-      <div class="sub">{ownerName(o)}{#if o.project_id} · {projectById(o.project_id)?.name}{/if}{#if o.state === 'blocked' && o.blocker} · {o.blocker}{:else if o.next_step} · дальше: {o.next_step}{/if}</div>
+      <div class="sub">{dots(ownerName(o), o.project_id && projectById(o.project_id)?.name, o.state === 'blocked' && o.blocker ? o.blocker : o.next_step ? 'дальше: ' + o.next_step : '')}</div>
     </span>
     <span class="chip {o.state === 'blocked' ? 'bad' : o.state === 'review' ? 'warn' : o.state === 'running' ? 'accent' : o.state === 'done' ? 'ok' : ''}">{STATE_LABEL[o.state]}</span>
     <span class="faint when">{timeAgo(o.updated_at)}</span>
   </button></li>
 {/snippet}
 
+{#snippet pickRow(o: Obligation)}
+  <li class="pick" class:sel={picked.includes(o.id)}>
+    <input type="checkbox" aria-label="Выбрать: {o.title}" checked={picked.includes(o.id)} onchange={() => toggle(o.id)} />
+    <button class="item" onclick={() => go({ kind: 'obligations', id: o.id })}>
+      <span class="grow">
+        <span class="title">{o.title}</span>
+        <div class="sub">{dots(ownerName(o), o.state === 'blocked' && o.blocker ? o.blocker : o.state === 'review' ? o.outcome : o.next_step ? 'дальше: ' + o.next_step : '')}</div>
+      </span>
+      <span class="chip {o.state === 'blocked' ? 'bad' : o.state === 'review' ? 'warn' : ''}">{STATE_LABEL[o.state]}</span>
+      <span class="faint when">{timeAgo(o.updated_at)}</span>
+    </button>
+    {#if o.state === 'review'}
+      <span class="quick">
+        <button class="btn sm" disabled={busy} onclick={() => bulk('done', {}, [o.id])} title="Результат принят, задача закрыта">Принять</button>
+        <button class="btn sm" disabled={busy} onclick={() => bulk('accepted', { note: 'возвращено на доработку' }, [o.id])} title="Вернуть исполнителю на доработку">Вернуть</button>
+      </span>
+    {/if}
+  </li>
+{/snippet}
+
 {#if id && detail}
   {@const o = detail.obligation}
-  <Page title={o.title} sub="{ownerName(o)}{o.project_id ? ' · ' + projectById(o.project_id)?.name : ''}">
-    {#snippet actions()}<button class="btn" onclick={() => go({ kind: 'obligations' })}>Все задача</button>{/snippet}
+  <Page title={o.title} sub={dots(ownerName(o), o.project_id && projectById(o.project_id)?.name)} back={{ label: 'Задачи', onclick: () => go({ kind: 'obligations' }) }}>
     <div class="split">
       <div>
         {#if o.state === 'blocked' || o.state === 'review' || (o.state === 'waiting' && o.wait_condition?.type === 'user')}
@@ -176,8 +242,7 @@
             {#if detail.thread_id}<button class="btn" onclick={() => go({ kind: 'chat', id: detail!.thread_id! })}><Icon name="chat" size={14} />Открыть ход работы</button>{/if}
             {#if o.state !== 'done' && o.state !== 'cancelled'}
               <label>Ответственный
-                <select class="field" value={o.owner_id ?? ''} onchange={(e) => reassign(e.currentTarget.value)}>
-                  {#each app.agents as a}<option value={a.id}>{a.name}</option>{/each}</select></label>
+                <Dropdown block value={o.owner_id ?? ''} options={app.agents.map((a) => ({ id: a.id, label: a.name }))} label="Ответственный" onpick={(v) => reassign(v)} /></label>
               {#if o.state === 'blocked'}<button class="btn" onclick={() => transition('accepted', { note: 'повторный запуск' })}>Запустить снова</button>{/if}
               <button class="btn" onclick={() => transition('done', { outcome: prompt('Что получено?') || '' })}>Отметить выполненным</button>
               <button class="btn danger" onclick={cancel}>Отменить</button>
@@ -197,7 +262,7 @@
     </div>
   </Page>
 {:else}
-  <Page title="Задача">
+  <Page title="Задачи">
     {#snippet actions()}<button class="btn primary" onclick={() => (creating = !creating)}><Icon name="plus" size={14} />Новая задача</button>{/snippet}
 
     <div class="tabbar" role="tablist" aria-label="Раздел задач">
@@ -219,11 +284,11 @@
         <label>Критерии завершения <small>по ним результат будут проверять</small><textarea class="field" rows="2" bind:value={draft.criteria}></textarea></label>
         <div class="row">
           <label style="flex:1">Ответственный
-            <select class="field" bind:value={draft.owner_id} required><option value="" disabled>Выберите…</option>{#each app.agents as a}<option value={a.id}>{a.name}</option>{/each}</select></label>
+            <Dropdown block value={draft.owner_id} options={[{ id: '', label: 'Выберите…', disabled: true }, ...app.agents.map((a) => ({ id: a.id, label: a.name }))]} label="Кому" onpick={(v) => (draft.owner_id = v)} /></label>
           <label style="flex:1">Проект
-            <select class="field" bind:value={draft.project_id}><option value="">Без проекта</option>{#each app.projects as p}<option value={p.id}>{p.name}</option>{/each}</select></label>
+            <Dropdown block value={draft.project_id} options={[{ id: '', label: 'Без проекта' }, ...app.projects.map((p) => ({ id: p.id, label: p.name }))]} label="Проект" onpick={(v) => (draft.project_id = v)} /></label>
         </div>
-        <div class="row"><button class="btn primary" type="submit">Поручить</button><button class="btn" type="button" onclick={() => (creating = false)}>Отмена</button></div>
+        <div class="row"><button class="btn primary" type="submit" disabled={!draft.owner_id || !draft.title.trim()}>Поручить</button><button class="btn" type="button" onclick={() => (creating = false)}>Отмена</button></div>
         {#if error}<p class="bad">{error}</p>{/if}
       </form>
     {/if}
@@ -246,8 +311,26 @@
               <button class="btn sm primary" onclick={() => decideDecision(d, 'accepted')}>Принять</button>
               <button class="btn sm" onclick={() => decideDecision(d, 'rejected')}>Отклонить</button></li>
           {/each}
-          {#each att.needs_user as o (o.id)}{@render row(o)}{/each}
         </ul>
+        {#if att.needs_user.length}
+          <div class="triage" class:solo={!att.approvals.length && !att.proposed_decisions.length}>
+            <label class="pickall">
+              <input type="checkbox" checked={picked.length > 0 && picked.length === att.needs_user.length} indeterminate={picked.length > 0 && picked.length < att.needs_user.length} onchange={(e) => (picked = e.currentTarget.checked ? att.needs_user.map((o) => o.id) : [])} />
+              {picked.length ? `Выбрано: ${picked.length}` : 'Выбрать все'}
+            </label>
+            {#if picked.length}
+              <span class="grow"></span>
+              {#if pickedReview.length}<button class="btn sm primary" disabled={busy} onclick={() => bulk('done')}>Принять{pickedReview.length < picked.length ? ` (${pickedReview.length})` : ''}</button>
+              <button class="btn sm" disabled={busy} onclick={() => bulk('accepted', { note: 'возвращено на доработку' })}>Вернуть в работу</button>{/if}
+              <button class="btn sm danger" disabled={busy} onclick={bulkCancel}>Отменить</button>
+            {/if}
+          </div>
+          {#each groups as g (g.key)}
+            {#if groups.length > 1}<div class="ghead">{g.name} <span class="count">{g.items.length}</span></div>{/if}
+            <ul class="list">{#each g.items as o (o.id)}{@render pickRow(o)}{/each}</ul>
+          {/each}
+          {#if bulkError}<p class="bad">{bulkError}</p>{/if}
+        {/if}
       </div>
     {/if}
 
@@ -269,6 +352,37 @@
 {/if}
 
 <style>
+  /* triage */
+  .triage { display: flex; align-items: center; gap: 6px; min-height: 34px; margin: 0 0 8px; padding: 0 4px; flex-wrap: wrap; }
+  .triage:not(.solo) { margin-top: 12px; }
+  .triage .grow { flex: 1; }
+  .pickall { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--fg-2); cursor: pointer; }
+  .ghead { margin: 14px 4px 6px; font-size: 12px; font-weight: 600; color: var(--fg-2); }
+  .ghead .count { color: var(--fg-3); font-weight: 500; margin-left: 4px; }
+  .list + .ghead { margin-top: 16px; }
+  .pick { display: flex; align-items: center; min-width: 0; padding-left: 14px; }
+  .pick.sel { background: var(--bg-hover); }
+  .pick > .item { flex: 1; min-width: 0; padding-left: 4px; }
+  .pick > .item:hover { background: none; }
+  .pick:hover { background: var(--bg-hover); }
+  .quick { display: inline-flex; gap: 4px; padding-right: 12px; flex: none; }
+  /* a monochrome box: 15px to see, 24px to hit */
+  input[type='checkbox'] { appearance: none; -webkit-appearance: none; width: 24px; height: 24px; margin: 0; flex: none; display: grid; place-items: center; cursor: pointer; border-radius: 6px; background: none; }
+  input[type='checkbox']::before { content: ''; grid-area: 1 / 1; width: 15px; height: 15px; border-radius: 4px; background: var(--bg-raised); box-shadow: inset 0 0 0 1.5px var(--fg-3); transition: background 0.12s var(--ease); }
+  input[type='checkbox']::after { content: ''; grid-area: 1 / 1; }
+  input[type='checkbox']:hover::before { box-shadow: inset 0 0 0 1.5px var(--fg-2); }
+  input[type='checkbox']:checked::before, input[type='checkbox']:indeterminate::before { background: var(--fg); box-shadow: none; }
+  input[type='checkbox']:checked::after { width: 4px; height: 8px; margin-top: -2px; border: solid var(--bg); border-width: 0 2px 2px 0; transform: rotate(45deg); }
+  input[type='checkbox']:indeterminate::after { width: 8px; height: 2px; border-radius: 1px; background: var(--bg); }
+  input[type='checkbox']:focus-visible { outline: none; }
+  input[type='checkbox']:focus-visible::before { box-shadow: var(--focus-ring); }
+  .pick { padding-left: 10px; }
+  @media (hover: hover) {
+    .quick { display: none; }
+    .pick:hover .quick, .pick:focus-within .quick { display: inline-flex; }
+    .pick:hover .when, .pick:focus-within .when { display: none; }
+  }
+  @media (max-width: 640px) { .quick { display: none !important; } }
   .tabbar { display: inline-flex; padding: 3px; gap: 2px; border-radius: 10px; background: var(--bg-hover); margin: 0 0 18px; }
   .tabbar button { display: inline-flex; align-items: center; gap: 6px; padding: 5px 14px; border-radius: 8px; font-size: 13px; color: var(--fg-2); }
   .tabbar button:hover { color: var(--fg); }

@@ -1,21 +1,38 @@
 <script lang="ts">
   import { get, patch, post } from '../lib/api';
   import { agentById, app, go } from '../lib/store.svelte';
-  import { timeAgo } from '../lib/format';
+  import { N, count, dots, timeAgo } from '../lib/format';
   import Avatar from '../components/Avatar.svelte';
   import Icon from '../components/Icon.svelte';
   import Page from '../components/Page.svelte';
 
+  // The shared state carries companies without their numbers; the companies endpoint has them.
+  let counts = $state<Record<string, { projects: number; open_obligations: number }>>({});
+  async function loadCounts() {
+    try {
+      const list: any[] = await get('/api/companies');
+      counts = Object.fromEntries(list.map((c) => [c.id, { projects: c.projects ?? 0, open_obligations: c.open_obligations ?? 0 }]));
+    } catch {
+      /* offline: the cards show what the state has */
+    }
+  }
+  $effect(() => {
+    void app.projects.length;
+    void app.companies.length;
+    loadCounts();
+  });
+
   let { id }: { id?: string } = $props();
 
   let creating = $state(false);
-  let draft = $state({ name: '', brief: '', color: '#5e5ce6' });
+  let draft = $state({ name: '', brief: '', color: '#8e8e93' });
   let d = $state<any>(null);
   let brief = $state('');
   let newProject = $state('');
   let newDecision = $state('');
   let error = $state('');
-  const colors = ['#5e5ce6', '#0a84ff', '#30d158', '#ffd60a', '#ff9f0a', '#ff453a', '#bf5af2', '#64d2ff'];
+  // muted, the same family as the specialists' colours: a mark to tell companies apart, not a rainbow
+  const colors = ['#8e8e93', '#7fa38c', '#b2927a', '#a98bb5', '#b59a6a', '#a8848a', '#97a37f', '#7f98a8'];
 
   async function load() {
     if (!id) return (d = null);
@@ -39,7 +56,7 @@
       const c = await post('/api/companies', draft);
       await refresh();
       creating = false;
-      draft = { name: '', brief: '', color: '#5e5ce6' };
+      draft = { name: '', brief: '', color: '#8e8e93' };
       go({ kind: 'companies', id: c.id });
     } catch (e: any) {
       error = e.message;
@@ -87,14 +104,14 @@
         <button class="card pad click" onclick={() => go({ kind: 'companies', id: c.id })}>
           <div class="row"><i class="cd" style="background:{c.color}"></i><b>{c.name}</b></div>
           {#if c.brief}<p class="muted clamp">{c.brief}</p>{/if}
-          <div class="row"><span class="chip">{c.projects ?? 0} проектов</span><span class="chip">{c.open_obligations ?? 0} задач</span></div>
+          <div class="row"><span class="chip">{count(counts[c.id]?.projects ?? c.projects, N.project)}</span>{#if counts[c.id]?.open_obligations ?? c.open_obligations}<span class="chip">{count(counts[c.id]?.open_obligations ?? c.open_obligations, N.task)}</span>{/if}</div>
         </button>
       {:else}<p class="empty-note">Компаний пока нет</p>{/each}
     </div>
   </Page>
 {:else if d}
-  <Page title={d.company.name}>
-    {#snippet actions()}<button class="btn" onclick={() => go({ kind: 'companies' })}>Все компании</button><button class="btn primary" onclick={() => go({ kind: 'new' })}><Icon name="chat" size={14} />Новый чат</button>{/snippet}
+  <Page title={d.company.name} back={{ label: 'Компании', onclick: () => go({ kind: 'companies' }) }}>
+    {#snippet actions()}<button class="btn primary" onclick={() => go({ kind: 'new' })}><Icon name="chat" size={14} />Новый чат</button>{/snippet}
     <div class="split">
       <div>
         <div class="section">
@@ -145,7 +162,7 @@
           <ul class="list">
             {#each d.people as p (p.agent.id)}
               <li><button class="item" onclick={() => go({ kind: 'agents', id: p.agent.id })}>
-                <Avatar name={p.agent.name} color={p.agent.accent} size={24} /><span class="grow">{p.agent.name}<div class="sub">{p.own_memory} знаний · {p.done} задач</div></span></button></li>
+                <Avatar name={p.agent.name} color={p.agent.accent} size={24} /><span class="grow">{p.agent.name}<div class="sub">{dots(count(p.own_memory, N.fact), count(p.done, N.task))}</div></span></button></li>
             {:else}<li class="empty-note">Пока никто</li>{/each}
           </ul>
         </div>

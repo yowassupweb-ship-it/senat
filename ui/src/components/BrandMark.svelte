@@ -18,7 +18,7 @@
   let { id, size = 16, tint = false }: { id: string; size?: number; tint?: boolean } = $props();
   const key = $derived(id.split(':')[0]);
   const mark = $derived(MARKS[key]);
-  const color = $derived(tint ? ({ claude: '#d97757', codex: 'currentColor', kimi: '#1783ff' } as Record<string, string>)[key] : 'currentColor');
+  const color = $derived(tint ? ({ claude: '#d97757', codex: 'currentColor', kimi: '#1783ff' } as Record<string, string>)[key] : 'currentColor'); /* design-ok: the provider logo in its own colour */
 </script>
 
 {#if mark}

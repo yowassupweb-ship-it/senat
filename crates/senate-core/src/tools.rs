@@ -41,7 +41,7 @@ pub fn definitions() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "senate_attach",
-            description: "Привязать этот разговор к проекту или компании (по названию), чтобы их память, решения и папка стали частью контекста. Делай это сам, когда ясно, о чём речь.",
+            description: "Привязать этот разговор к проекту или компании по названию (регистр не важен, хватит части названия, если она однозначна), чтобы их память, решения и папка стали частью контекста. Так выполняют просьбы «прикрепи чат к …», «перенеси в проект …». С одной компанией чат сохраняет свой проект, если тот не принадлежит другой компании. Делай это сам, когда ясно, о чём речь.",
             schema: json!({"type":"object","properties":{"project":{"type":"string"},"company":{"type":"string"}}}),
         },
         ToolDef {
@@ -164,6 +164,17 @@ pub fn definitions() -> Vec<ToolDef> {
     ]
 }
 
+/// A project by the name a person typed: exact in any case, else the only one that contains it.
+fn project_by_name(store: &Store, name: &str) -> Result<Option<Project>> {
+    let want = crate::store::fold_name(name);
+    let all = store.list_projects()?;
+    if let Some(p) = all.iter().find(|p| crate::store::fold_name(&p.name) == want) {
+        return Ok(Some(p.clone()));
+    }
+    let partial: Vec<&Project> = all.iter().filter(|p| crate::store::fold_name(&p.name).contains(&want)).collect();
+    Ok(if partial.len() == 1 { Some(partial[0].clone()) } else { None })
+}
+
 /// A link the person's own machine can open safely: http(s) to the loopback interface only.
 /// The agent chooses the URL, so anything that could lead off this machine is refused.
 /// Returns the normalised URL and a short default label (`localhost:3000`).
@@ -265,12 +276,12 @@ fn call_inner(store: &Store, ctx: &ToolCtx, name: &str, a: &Value, bypass: bool)
             let limit = a.get("limit").and_then(|v| v.as_i64()).unwrap_or(8).clamp(1, 20);
             let (mut project_id, mut company_id) = scope_of(store, ctx);
             if !s(a, "project").is_empty() {
-                if let Some(p) = store.list_projects()?.into_iter().find(|p| p.name.to_lowercase() == s(a, "project").to_lowercase()) {
+                if let Some(p) = project_by_name(store, s(a, "project"))? {
                     company_id = p.company_id.clone();
                     project_id = Some(p.id);
                 }
             } else if !s(a, "company").is_empty() {
-                if let Some(c) = store.company_by_name(s(a, "company"))? {
+                if let Some(c) = store.company_like(s(a, "company"))? {
                     company_id = Some(c.id);
                     project_id = None;
                 }
@@ -299,15 +310,31 @@ fn call_inner(store: &Store, ctx: &ToolCtx, name: &str, a: &Value, bypass: bool)
         }
         "senate_attach" => {
             let tid = ctx.thread_id.clone().ok_or_else(|| Error::invalid("у этого запуска нет разговора"))?;
-            let project = if s(a, "project").is_empty() { None } else { store.list_projects()?.into_iter().find(|p| p.name.to_lowercase() == s(a, "project").to_lowercase()) };
-            let company = if s(a, "company").is_empty() { None } else { store.company_by_name(s(a, "company"))? };
+            let project = if s(a, "project").is_empty() { None } else { project_by_name(store, s(a, "project"))? };
+            let company = if s(a, "company").is_empty() { None } else { store.company_like(s(a, "company"))? };
+            if !s(a, "project").is_empty() && project.is_none() {
+                return Err(Error::not_found(format!("проект «{}»; названия проектов — в senate_find", s(a, "project"))));
+            }
+            if !s(a, "company").is_empty() && company.is_none() {
+                let names: Vec<String> = store.list_companies()?.into_iter().map(|c| c.name).collect();
+                return Err(Error::not_found(format!("компания «{}»; есть: {}", s(a, "company"), names.join(", "))));
+            }
             let (p, c) = match (&project, &company) {
-                (Some(p), _) => (Some(p.id.clone()), p.company_id.clone()),
-                (None, Some(c)) => (None, Some(c.id.clone())),
-                _ => return Err(Error::not_found("проект или компания с таким названием")),
+                (Some(p), _) => (Some(p.id.clone()), p.company_id.clone().or_else(|| company.as_ref().map(|c| c.id.clone()))),
+                (None, Some(c)) => {
+                    // Filing a chat under a company keeps its project, unless that project belongs to another company.
+                    let cur = store.get_thread(&tid)?.project_id;
+                    let keep = match &cur {
+                        Some(pid) => store.get_project(pid).ok().filter(|p| p.company_id.as_deref().map_or(true, |x| x == c.id)).map(|p| p.id),
+                        None => None,
+                    };
+                    (keep, Some(c.id.clone()))
+                }
+                _ => return Err(Error::invalid("укажи project или company")),
             };
             store.move_thread(&tid, p.as_deref(), c.as_deref())?;
-            Ok(json!({"status": "attached", "project": project.map(|x| x.name), "company": c}))
+            let company_name = match &c { Some(id) => store.list_companies()?.into_iter().find(|x| &x.id == id).map(|x| x.name), None => None };
+            Ok(json!({"status": "attached", "project": project.map(|x| x.name), "kept_project": p, "company": company_name}))
         }
         "senate_remember" => {
             if let Some(p) = gate(store, ctx, action::MEMORY_WRITE, name, a, bypass)? {
