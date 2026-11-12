@@ -54,10 +54,66 @@ const renderer = new marked.Renderer();
 renderer.link = ({ href, text }) => `<a href="${href}" target="_blank" rel="noreferrer noopener">${text}</a>`;
 marked.use({ renderer });
 
+// A local address written without a scheme (`localhost:3006`, `127.0.0.1:5173/app`) is still a link to the
+// person's dev server: agents write it that way all the time and a plain text address cannot be clicked.
+const LOCAL_ADDR = /(?<![\w./@:-])((?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d{2,5})(?:\/[^\s<>"')\]]*)?)/gi;
+const LOCAL_WHOLE = /^(?:https?:\/\/)?(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d{2,5})?(?:\/\S*)?$/i;
+
+function localHref(addr: string): string {
+  const a = addr.replace(/[.,;:!?]+$/, '');
+  return (/^https?:\/\//i.test(a) ? a : `http://${a}`).replace('//0.0.0.0', '//localhost');
+}
+
+function linkLocal(html: string): string {
+  if (!/localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]/i.test(html)) return html;
+  const doc = new DOMParser().parseFromString(`<body>${html}</body>`, 'text/html');
+  const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT);
+  const texts: Text[] = [];
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) texts.push(n as Text);
+  const mk = (href: string, label: string) => {
+    const a = doc.createElement('a');
+    a.href = href;
+    a.target = '_blank';
+    a.rel = 'noreferrer noopener';
+    a.textContent = label;
+    return a;
+  };
+  for (const t of texts) {
+    const parent = t.parentElement;
+    if (!parent || parent.closest('a, pre')) continue;
+    const text = t.data;
+    // inline code that is only an address: the whole chip becomes the link
+    if (parent.tagName === 'CODE') {
+      const whole = text.trim();
+      if (LOCAL_WHOLE.test(whole)) {
+        const a = mk(localHref(whole), '');
+        parent.replaceWith(a);
+        a.appendChild(parent);
+      }
+      continue;
+    }
+    LOCAL_ADDR.lastIndex = 0;
+    if (!LOCAL_ADDR.test(text)) continue;
+    LOCAL_ADDR.lastIndex = 0;
+    const frag = doc.createDocumentFragment();
+    let last = 0;
+    for (const m of text.matchAll(LOCAL_ADDR)) {
+      const start = m.index ?? 0;
+      const trimmed = m[1].replace(/[.,;:!?]+$/, '');
+      frag.append(text.slice(last, start));
+      frag.append(mk(localHref(trimmed), trimmed));
+      last = start + trimmed.length;
+    }
+    frag.append(text.slice(last));
+    t.replaceWith(frag);
+  }
+  return doc.body.innerHTML;
+}
+
 /** Markdown → sanitized HTML. Agent output is untrusted: always sanitized. */
 export function md(text: string): string {
   const html = marked.parse(text || '', { async: false }) as string;
-  return DOMPurify.sanitize(html, { ADD_ATTR: ['target'] });
+  return DOMPurify.sanitize(linkLocal(DOMPurify.sanitize(html, { ADD_ATTR: ['target'] })), { ADD_ATTR: ['target'] });
 }
 
 export const ROLE_TITLE: Record<string, string> = {

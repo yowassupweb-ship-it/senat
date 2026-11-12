@@ -14,6 +14,8 @@ export interface Agent {
   next_level_xp?: number;
   /** Address of the picture ('' = none: the first letter on the accent colour). */
   avatar?: string;
+  /** 'm' | 'f' | '' (not set): how the specialist speaks about themselves. */
+  gender?: string;
 }
 
 export interface Company {
@@ -354,4 +356,7 @@ export interface GitStatus {
   changes?: { path: string; status: 'new' | 'modified' | 'deleted' | 'added' | 'renamed' }[];
   stat?: string;
   last_commit?: string;
+  /** commits not pushed / not pulled yet; null without an upstream branch */
+  ahead?: number | null;
+  behind?: number | null;
 }

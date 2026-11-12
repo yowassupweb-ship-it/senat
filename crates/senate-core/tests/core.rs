@@ -323,11 +323,14 @@ fn preview_links_are_local_only() {
     assert_eq!(ok("https://[::1]:8443/a"), Some("https://[::1]:8443/a".into()));
     assert_eq!(ok("http://app.localhost:3000"), Some("http://app.localhost:3000".into()));
     assert_eq!(local_preview_url("http://localhost:3000").unwrap().1, "localhost:3000");
+    // an address written without the scheme is the same address
+    assert_eq!(ok("localhost:3006"), Some("http://localhost:3006".into()));
+    assert_eq!(ok("127.0.0.1:5173/app"), Some("http://127.0.0.1:5173/app".into()));
     for bad in [
         "http://example.com", "https://localhost.evil.com", "http://localhost@evil.com", "http://evil.com#@localhost",
         "http://localhost:99999", "http://localhost:abc", "http://localhost:", "ftp://localhost", "javascript:alert(1)",
         "file:///C:/x", "http://192.168.1.5:3000", "http://0.0.0.0:3000", "//localhost:3000", r"http://localhost:3000\@evil.com",
-        "http://local host", "", "localhost:3000",
+        "http://local host", "", "example.com:3000", "evil.com/localhost:3000",
     ] {
         assert!(local_preview_url(bad).is_none(), "{bad}");
     }
@@ -743,4 +746,52 @@ fn the_calendar_lays_out_the_plan_what_was_done_and_deadlines() {
     let items = cal["items"].as_array().unwrap();
     assert!(items.iter().any(|i| i["kind"] == "run" && i["obligation_id"] == made.id.as_str() && i["state"] == "accepted"));
     assert!(items.iter().any(|i| i["kind"] == "due" && i["obligation_id"] == due.id.as_str()));
+}
+
+#[test]
+fn a_specialist_can_be_given_a_username_and_a_gender() {
+    let (st, dev, arch, _) = setup();
+    let (a, old) = st.set_agent_slug(&dev.id, " @Dev_One ").unwrap();
+    assert_eq!(a.slug, "dev_one");
+    assert_eq!(old, dev.slug);
+    assert_eq!(st.get_agent("dev_one").unwrap().id, dev.id);
+    // taken, malformed and too short usernames are refused; keeping your own is fine
+    assert!(st.set_agent_slug(&arch.id, "dev_one").is_err());
+    assert!(st.set_agent_slug(&arch.id, "Имя").is_err());
+    assert!(st.set_agent_slug(&arch.id, "a").is_err());
+    assert!(st.set_agent_slug(&dev.id, "dev_one").is_ok());
+
+    assert_eq!(st.set_agent_gender(&dev.id, "f").unwrap().gender, "f");
+    assert!(st.set_agent_gender(&dev.id, "x").is_err());
+    assert_eq!(st.set_agent_gender(&dev.id, "").unwrap().gender, "");
+}
+
+#[test]
+fn compact_asks_the_specialist_for_a_summary_and_starts_a_fresh_session() {
+    let (st, dev, _, _) = setup();
+    let t = st.create_thread(NewThread { agent_id: Some(dev.id.clone()), ..Default::default() }).unwrap();
+    st.set_cli_session_for(&t.id, "claude", &dev.id, "long-session").unwrap();
+
+    // the command is not a question for the specialist: they are asked for a summary, in the same session
+    let d = st.send_chat(ChatSend { thread_id: t.id.clone(), text: "/compact упор на решения".into(), ..Default::default() }, "claude:sonnet").unwrap();
+    assert_eq!(d.sessions.len(), 1);
+    assert!(d.sessions[0].prompt.contains("сжатие контекста"), "{}", d.sessions[0].prompt);
+    assert!(d.sessions[0].prompt.contains("упор на решения"));
+    assert_eq!(d.agent_messages[0].props["compact"], true);
+    assert_eq!(senate_core::engine::compact_arg("/compact"), Some(""));
+    assert_eq!(senate_core::engine::compact_arg("/compactor"), None);
+    assert_eq!(senate_core::engine::compact_arg("compact"), None);
+
+    // the summary is kept per specialist and the old session is forgotten
+    st.set_compact_summary(&t.id, &dev.id, "## Цель\nсделать CRM", 12).unwrap();
+    st.clear_cli_session_for(&t.id, "claude", &dev.id).unwrap();
+    let t = st.get_thread(&t.id).unwrap();
+    assert_eq!(st.cli_session_for(&t, "claude", &dev.id), None);
+    assert_eq!(Store::compact_summary(&t, &dev.id).as_deref(), Some("## Цель\nсделать CRM"));
+    assert!(senate_core::workset::compact_preamble("x").contains("сжат"));
+
+    // nobody has answered in an unpinned chat: nothing to compact
+    let t2 = st.create_thread(NewThread::default()).unwrap();
+    let d2 = st.send_chat(ChatSend { thread_id: t2.id.clone(), text: "/compact".into(), ..Default::default() }, "claude:sonnet").unwrap();
+    assert!(d2.sessions.is_empty());
 }

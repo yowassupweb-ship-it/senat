@@ -10,6 +10,9 @@ mod images;
 mod permissions;
 mod skills;
 pub mod mcp;
+pub mod mcp_http;
+pub mod runner;
+pub mod s3;
 mod project_git;
 mod reflect;
 mod uploads;
@@ -85,6 +88,8 @@ pub struct App {
     pub(crate) latest: RwLock<HashMap<String, String>>,
     /// Forums with a live orchestrator.
     pub(crate) forums: Mutex<std::collections::HashSet<String>>,
+    /// Specialists who work on a person's computer: the queue of their jobs.
+    pub runner: runner::Hub,
 }
 
 impl App {
@@ -228,6 +233,7 @@ pub async fn serve(cfg: Config) -> Result<Handle, String> {
         limits: RwLock::new(HashMap::new()),
         latest: RwLock::new(HashMap::new()),
         forums: Mutex::new(Default::default()),
+        runner: Default::default(),
     });
     accounts::rebuild_caps(&app);
     // Who is logged in is learned in the background: the window must open at once.

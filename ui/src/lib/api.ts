@@ -1,6 +1,8 @@
 // Talks to a Senate node: the one that serves this page, or a remote one chosen in settings.
 // The desktop shell injects `window.__SENATE__ = { token }` for its embedded node.
 
+import { activeNodeId, parseLink, savedNodes, setActiveNode, upsertNode } from './nodes';
+
 const LS_TOKEN = 'senate.token';
 const LS_HUB = 'senate.hub';
 
@@ -25,30 +27,65 @@ function safeSet(k: string, v: string) {
 
 export function bootstrapConnection(): boolean {
   const injected = (window as any).__SENATE__;
-  const m = /[#&]token=([A-Za-z0-9_-]+)/.exec(location.hash);
-  if (injected?.token) token = injected.token;
-  else if (m) token = m[1];
-  else token = safeGet(LS_TOKEN);
-  if (m) {
-    history.replaceState(null, '', location.pathname + location.search + location.hash.replace(/[#&]?token=[A-Za-z0-9_-]+/, '').replace(/^&/, '#'));
+  // 1. A connect link wins: it is an explicit "use this node".
+  const link = parseLink(location.hash);
+  if (link) {
+    setActiveNode(upsertNode(link).id);
+    history.replaceState(null, '', location.pathname + location.search);
   }
-  if (token && !injected?.token) safeSet(LS_TOKEN, token);
-  base = injected?.base || safeGet(LS_HUB) || '';
+  // legacy `#token=` link for the node that serves this page
+  const m = /[#&]token=([A-Za-z0-9_-]+)/.exec(location.hash);
+  if (m) {
+    setActiveNode(upsertNode({ url: '', token: m[1] }).id);
+    history.replaceState(null, '', location.pathname + location.search);
+  }
+  const active = savedNodes().find((n) => n.id === activeNodeId());
+  if (active) {
+    token = active.token;
+    base = active.url;
+  } else if (injected?.token) {
+    token = injected.token;
+    base = injected.base || '';
+  } else {
+    token = safeGet(LS_TOKEN);
+    base = safeGet(LS_HUB);
+  }
   return !!token;
 }
 
 export function setConnection(hub: string, tok: string) {
   token = tok;
   base = hub.replace(/\/+$/, '');
-  safeSet(LS_TOKEN, tok);
-  safeSet(LS_HUB, base);
+  setActiveNode(upsertNode({ url: base, token: tok }).id);
 }
 export function disconnect() {
+  setActiveNode('');
   safeSet(LS_TOKEN, '');
   safeSet(LS_HUB, '');
   token = '';
   base = '';
 }
+export const currentConnection = () => ({ url: base, token });
+/** Send a file as the raw request body (the cloud upload). */
+export async function postRaw<T = any>(path: string, file: Blob): Promise<T> {
+  let res: Response;
+  try {
+    res = await fetch(base + path, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': file.type || 'application/octet-stream' }, body: file });
+  } catch {
+    throw new ApiError(0, 'Нет связи с Senate');
+  }
+  if (!res.ok) {
+    let msg = res.statusText;
+    try {
+      msg = (await res.json()).error || msg;
+    } catch {
+      /* not json */
+    }
+    throw new ApiError(res.status, msg);
+  }
+  return res.json();
+}
+
 export const hubUrl = () => base || location.origin;
 
 export class ApiError extends Error {
@@ -156,4 +193,18 @@ export function openEvents(onEvent: (type: string, data: any) => void, onState: 
     clearTimeout(retry);
     es?.close();
   };
+}
+
+/**
+ * Open a web link in the browser of THIS computer. Only the desktop window can do it (the node may be on a server,
+ * where opening a browser would be pointless). Returns false in a plain browser, which follows the link itself.
+ * A bare `localhost:3006` is read as http://localhost:3006.
+ */
+export function openExternal(raw: string): boolean {
+  const internals = (window as any).__TAURI_INTERNALS__;
+  if (!internals?.invoke) return false;
+  const url = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : `http://${raw}`;
+  if (!/^https?:\/\//i.test(url)) return false;
+  internals.invoke('open_url', { url }).catch(() => {});
+  return true;
 }

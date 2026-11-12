@@ -150,6 +150,14 @@ const PROTOCOL: &str = "\
 /// Standing part of the prompt: identity, project picture, protocol. Goes into the system prompt.
 pub fn system_prompt(store: &Store, agent: &Agent, project: Option<&Project>, company_id: Option<&str>) -> Result<String> {
     let mut s = format!("# {} — {}\n\n{}\n\n", agent.name, role_title(&agent.role), agent.profile.trim());
+    match agent.gender.as_str() {
+        "f" => s += "## Кто ты\nТы — женщина: о себе говори в женском роде («я посмотрела», «я сделала»).\n\n",
+        "m" => s += "## Кто ты\nТы — мужчина: о себе говори в мужском роде («я посмотрел», «я сделал»).\n\n",
+        _ => {}
+    }
+    if let Some(name) = store.setting("user_name")?.map(|n| n.trim().to_string()).filter(|n| !n.is_empty()) {
+        s += &format!("## Кто перед тобой\nЧеловека зовут «{name}»: так к нему и обращайся, если уместно.\n\n");
+    }
     if let Some(co) = company_id.or(project.and_then(|p| p.company_id.as_deref())) {
         s += &company_block(store, co)?;
     }
@@ -270,6 +278,31 @@ pub fn chat_turn_prompt(store: &Store, agent: &Agent, thread: &Thread, text: &st
     }
     s += text;
     Ok(s)
+}
+
+/// `/compact`: the specialist writes down what a fresh session needs to carry on this chat. `extra` is what the
+/// person asked to keep in mind (`/compact упор на решения по API`).
+pub fn compact_prompt(extra: &str) -> String {
+    let mut s = String::from(
+        "Это сжатие контекста: разговор стал длинным, и его продолжит новая сессия, которая ничего из него не увидит. \
+Напиши сводку, по которой можно продолжить работу без потерь. Не вызывай инструменты, ничего не меняй и не отвечай на вопросы: только сводка.\n\n\
+Структура:\n\
+## Цель\nчто делаем и зачем\n\
+## Решения и договорённости\nчто решили и почему, включая отвергнутое\n\
+## Сделано\nконкретно: файлы, команды, адреса, id, результаты проверок\n\
+## Открыто\nчто не доделано, чего ждём, следующий шаг\n\
+## Важно помнить\nпожелания и правила владельца, ограничения, подводные камни\n\n\
+Пиши плотно и по делу, без вступлений. Сохраняй точные пути, имена, номера и команды: пересказ их теряет.",
+    );
+    if !extra.trim().is_empty() {
+        s += &format!("\n\nОсобо учти пожелание владельца к сводке: {}", extra.trim());
+    }
+    s
+}
+
+/// What a fresh session after `/compact` is told before the new message.
+pub fn compact_preamble(summary: &str) -> String {
+    format!("<senate-compact>\nКонтекст этого разговора был сжат. Вот твоя сводка прежней части, продолжай с неё:\n\n{}\n</senate-compact>\n\n", summary.trim())
 }
 
 /// Prompt for a session that exists because of an obligation (not a chat message).

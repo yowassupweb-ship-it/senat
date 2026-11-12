@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { del, disconnect, get, hubUrl, post, put } from '../lib/api';
+  import { currentConnection, del, disconnect, get, hubUrl, post, put } from '../lib/api';
+  import { activeNodeId, makeLink, parseLink, pingNode, removeNode, savedNodes, setActiveNode, upsertNode, type Reach, type SavedNode } from '../lib/nodes';
   import { app, applyTheme } from '../lib/store.svelte';
   import { dateTime } from '../lib/format';
   import { modelOptions } from '../lib/models';
@@ -8,6 +9,73 @@
   import Dropdown from '../components/Dropdown.svelte';
   import Icon from '../components/Icon.svelte';
   import Page from '../components/Page.svelte';
+
+  let nodes = $state<SavedNode[]>(savedNodes());
+  let reach = $state<Record<string, Reach | 'wait'>>({});
+  let linkIn = $state('');
+  let linkErr = $state('');
+  let shown = $state('');
+  let linkCopied = $state(false);
+  let mcpTab = $state('vscode');
+  let mcpShow = $state(false);
+  let mcpCopied = $state(false);
+  const mcpHelp: Record<string, string> = {
+    vscode: 'Создайте файл .vscode/mcp.json в проекте (или добавьте сервер командой «MCP: Add Server» → HTTP) и вставьте это.',
+    claude: 'Выполните команду в терминале: сервер появится во всех проектах Claude Code.',
+    chat: 'В Claude (Настройки → Коннекторы → Добавить свой) или ChatGPT (Настройки → Коннекторы → Создать) вставьте адрес. Токен уже в адресе.',
+  };
+  function mcpBase() {
+    const c = currentConnection();
+    return (c.url || location.origin).replace(/\/+$/, '') + '/mcp';
+  }
+  const mcpLocalOnly = $derived(/^https?:\/\/(127\.0\.0\.1|localhost)/.test(mcpBase()));
+  function mcpSnippet(tab: string, hide: boolean): string {
+    const url = mcpBase();
+    const tok = hide ? '••••••••••••••••' : currentConnection().token;
+    if (tab === 'claude') return `claude mcp add --transport http senate ${url} --header "Authorization: Bearer ${tok}"`;
+    if (tab === 'chat') return `${url}/${tok}`;
+    return JSON.stringify({ servers: { senate: { type: 'http', url, headers: { Authorization: `Bearer ${tok}` } } } }, null, 2);
+  }
+  function copyText(t: string): boolean {
+    try {
+      navigator.clipboard.writeText(t);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  const injected = (window as any).__SENATE__;
+  const myId = $derived(activeNodeId());
+  async function checkNodes() {
+    nodes = savedNodes();
+    for (const n of nodes) {
+      reach[n.id] = 'wait';
+      pingNode(n).then((r) => (reach[n.id] = r));
+    }
+  }
+  function useNode(id: string) { setActiveNode(id); location.reload(); }
+  function useDesktop() { setActiveNode(''); location.reload(); }
+  function dropNode(n: SavedNode) { removeNode(n.id); if (n.id === myId) location.reload(); else nodes = savedNodes(); }
+  function addByLink() {
+    const l = parseLink(linkIn);
+    if (!l) { linkErr = 'Не похоже на ссылку подключения Senate'; return; }
+    linkErr = '';
+    const n = upsertNode(l);
+    linkIn = '';
+    nodes = savedNodes();
+    reach[n.id] = 'wait';
+    pingNode(n).then((r) => (reach[n.id] = r));
+  }
+  function shareLink() {
+    const c = currentConnection();
+    shown = makeLink({ name: 'Senate', url: c.url, token: c.token }, location.origin);
+    linkCopied = false;
+  }
+  async function copyLink() {
+    try { await navigator.clipboard.writeText(shown); linkCopied = true; } catch { /* clipboard blocked */ }
+  }
+  const reachText = (r?: Reach | 'wait') => (r === 'ok' ? 'на связи' : r === 'auth' ? 'токен не подошёл' : r === 'down' ? 'не отвечает' : r === 'wait' ? 'проверяю…' : '');
+  checkNodes();
 
   let s = $state<any>(null);
   let grants = $state<{ grants: any[]; actions: string[] } | null>(null);
@@ -77,6 +145,23 @@
   async function setDefault(v: string) {
     s = await put('/api/settings', { default_backend: v });
     app.defaultBackend = s.effective_backend;
+  }
+  let userName = $state('');
+  let nameSaved = $state(false);
+  let nameLoaded = false;
+  $effect(() => {
+    if (s && !nameLoaded) {
+      nameLoaded = true;
+      userName = s.user_name ?? '';
+    }
+  });
+  async function saveName() {
+    const v = userName.trim();
+    if (!s || v === (s.user_name ?? '')) return;
+    s = await put('/api/settings', { user_name: v });
+    userName = s.user_name ?? v;
+    nameSaved = true;
+    setTimeout(() => (nameSaved = false), 2500);
   }
   async function setLearn(v: string) {
     s = await put('/api/settings', { learn_level: v });
@@ -200,6 +285,17 @@
     </section>
 
     <section class="block">
+      <h2>Профиль</h2>
+      <div class="rowset">
+        <div class="rs"><span>Как к вам обращаться<small class="faint" style="display:block">Специалисты будут называть вас так. Например: Антон, Антон Сергеевич, шеф.</small></span>
+          <div style="width:300px;max-width:100%;display:flex;gap:8px">
+            <input class="field" bind:value={userName} maxlength="60" placeholder="Ваше имя" aria-label="Как к вам обращаться" onkeydown={(e) => { if (e.key === 'Enter') saveName(); }} onblur={saveName} />
+            {#if nameSaved}<span class="faint" role="status" style="align-self:center;white-space:nowrap">сохранено</span>{/if}
+          </div></div>
+      </div>
+    </section>
+
+    <section class="block">
       <h2>По умолчанию</h2>
       <div class="rowset">
         <div class="rs"><span>Модель для чатов без основной модели</span>
@@ -232,14 +328,62 @@
     </section>
 
     <section class="block">
-      <h2>Нода</h2>
-      <dl class="card pad kv">
+      <h2>Подключить Senate к чатам и VS Code</h2>
+      <p class="muted" style="margin:0 0 10px">Через MCP любой чат с поддержкой коннекторов (Claude, ChatGPT) и VS Code смогут написать специалисту, поставить задачу и поискать в памяти этой ноды. Ссылка содержит доступ к ноде: передавайте только своим.</p>
+      <div class="card pad mcpbox">
+        <div class="tabs" role="tablist" aria-label="Куда подключаем">
+          {#each [['vscode', 'VS Code'], ['claude', 'Claude Code'], ['chat', 'Чат (Claude, ChatGPT)']] as [k, l]}
+            <button role="tab" aria-selected={mcpTab === k} class:on={mcpTab === k} onclick={() => { mcpTab = k; mcpCopied = false; }}>{l}</button>
+          {/each}
+        </div>
+        <p class="muted" style="margin:10px 0 6px">{mcpHelp[mcpTab]}</p>
+        <pre class="snip">{mcpSnippet(mcpTab, !mcpShow)}</pre>
+        <div class="row" style="gap:8px;margin-top:8px">
+          <button class="btn" onclick={() => (mcpCopied = copyText(mcpSnippet(mcpTab, false)))}>{mcpCopied ? 'Скопировано' : 'Копировать'}</button>
+          <button class="btn" onclick={() => (mcpShow = !mcpShow)}>{mcpShow ? 'Скрыть токен' : 'Показать токен'}</button>
+        </div>
+        {#if mcpLocalOnly}<p class="faint" style="margin:10px 0 0">Адрес этой ноды виден только на этом компьютере (туннель). Чтобы подключаться с других устройств, нужен публичный адрес с HTTPS.</p>{/if}
+      </div>
+    </section>
+
+    <section class="block">
+      <h2>Ноды</h2>
+      <p class="muted" style="margin:0 0 10px">Нода хранит память, историю и агентов. Подключайтесь к любой из них с любого компьютера по ссылке.</p>
+      <div class="card pad nodes">
+        {#if injected?.token}
+          <div class="nrow">
+            <div><strong>{injected.name || 'Нода программы'}</strong><div class="muted mono">{injected.remote ? 'серверная, через защищённый туннель' : 'эта программа, этот компьютер'} · {injected.base}</div></div>
+            {#if !myId}<span class="pill">активна</span>{:else}<button class="btn sm" onclick={useDesktop}>Переключиться</button>{/if}
+          </div>
+        {/if}
+        {#each nodes as n (n.id)}
+          <div class="nrow">
+            <div><strong>{n.name}</strong><div class="muted mono">{n.url || location.origin}</div><div class="muted" class:bad={reach[n.id] === 'auth' || reach[n.id] === 'down'}>{reachText(reach[n.id])}</div></div>
+            <div class="nact">
+              {#if n.id === myId}<span class="pill">активна</span>{:else}<button class="btn sm" onclick={() => useNode(n.id)}>Переключиться</button>{/if}
+              <button class="btn sm" onclick={() => dropNode(n)} aria-label={`Забыть ноду ${n.name}`}>Забыть</button>
+            </div>
+          </div>
+        {/each}
+        <div class="nadd">
+          <input class="field" bind:value={linkIn} placeholder="Вставьте ссылку подключения к ноде" aria-label="Ссылка подключения" />
+          <button class="btn" onclick={addByLink} disabled={!linkIn.trim()}>Добавить</button>
+        </div>
+        {#if linkErr}<p class="bad" role="alert">{linkErr}</p>{/if}
+      </div>
+      <dl class="card pad kv" style="margin-top:10px">
         <dt>Адрес</dt><dd class="mono">{hubUrl()}</dd>
         <dt>Версия</dt><dd>{app.version}</dd>
         <dt>Данные</dt><dd class="mono">{s.data_dir}</dd>
         <dt>Связь</dt><dd>{app.online ? 'на связи' : 'нет связи'}</dd>
       </dl>
-      <p style="margin-top:10px"><button class="btn" onclick={() => { disconnect(); location.reload(); }}>Отключиться от этой ноды</button></p>
+      <div style="margin-top:10px">
+        <button class="btn" onclick={shareLink}>Подключить другое устройство</button>
+        {#if shown}
+          <p class="muted">Откройте эту ссылку на другом компьютере или вставьте её в Senate → Настройки → Ноды. Ссылка содержит доступ к ноде — передавайте только своим.</p>
+          <div class="nadd"><input class="field mono" readonly value={shown} onfocus={(e) => e.currentTarget.select()} aria-label="Ссылка подключения" /><button class="btn" onclick={copyLink}>{linkCopied ? 'Скопировано' : 'Копировать'}</button></div>
+        {/if}
+      </div>
     </section>
   {:else}
     <p class="muted">Загрузка…</p>
@@ -247,6 +391,14 @@
 </Page>
 
 <style>
+  .mcpbox .tabs { display: inline-flex; }
+  .snip { margin: 0; padding: 12px 14px; border-radius: 10px; background: var(--bg); box-shadow: inset 0 0 0 1px var(--line); font: 12.5px/1.5 var(--mono, monospace); white-space: pre-wrap; word-break: break-all; color: var(--fg); }
+  .nodes { display:grid; gap:12px; }
+  .nrow { display:flex; justify-content:space-between; align-items:center; gap:12px; }
+  .nact { display:flex; gap:6px; }
+  .nadd { display:flex; gap:8px; margin-top:6px; }
+  .nadd .field { flex:1; min-width:0; }
+  .pill { font-size:12px; color:var(--fg-2); border:1px solid var(--border, currentColor); border-radius:999px; padding:2px 10px; }
   .block {
     margin-bottom: 28px;
   }

@@ -437,7 +437,30 @@ impl Store {
                 None => workset::route(&req.text, &pool),
             }
         };
+        // `/compact`: whoever worked in this chat writes a summary of it (see `workset::compact_prompt`); the node then
+        // starts their next turn in a fresh session that is given the summary.
+        let compact = compact_arg(&req.text).map(String::from);
+        let targets = if compact.is_some() && named.is_empty() && thread.agent_id.is_none() {
+            let mut seen = std::collections::HashSet::new();
+            let who: Vec<Agent> = self
+                .list_messages(&thread.id, None, 300)?
+                .iter()
+                .rev()
+                .filter(|m| m.author_kind == "agent" && m.props.get("call").is_none())
+                .filter_map(|m| m.author_id.clone())
+                .filter(|id| seen.insert(id.clone()))
+                .filter_map(|id| self.get_agent(&id).ok())
+                .collect();
+            who
+        } else {
+            targets
+        };
         let mut d = Dispatched { user_message: user_msg, agent_messages: vec![], sessions: vec![] };
+        if targets.is_empty() && compact.is_some() {
+            let m = self.post_message(&thread.id, "system", None, "Сжимать нечего: в этом чате ещё никто не отвечал.", serde_json::json!({}), MessageStatus::Done, None)?;
+            d.agent_messages.push(m);
+            return Ok(d);
+        }
         if targets.is_empty() {
             let m = self.post_message(&thread.id, "system", None, "В Senate пока нет специалистов — создайте хотя бы одного.", serde_json::json!({}), MessageStatus::Done, None)?;
             d.agent_messages.push(m);
@@ -446,17 +469,22 @@ impl Store {
         for agent in targets {
             // Everyone works on their own model, whichever chat they are in and whoever called them.
             let backend = if !agent.model_pref.is_empty() { agent.model_pref.clone() } else { default_backend.to_string() };
-            let mut prompt = workset::chat_turn_prompt(self, &agent, &thread, &req.text)?;
-            if req.text.trim().is_empty() {
-                prompt += "(сообщение без текста — смотри вложения)";
+            let mut prompt = match &compact {
+                Some(extra) => workset::compact_prompt(extra),
+                None => workset::chat_turn_prompt(self, &agent, &thread, &req.text)?,
+            };
+            if compact.is_none() {
+                if req.text.trim().is_empty() {
+                    prompt += "(сообщение без текста — смотри вложения)";
+                }
+                prompt += &workset::attachments_block(&req.attachments);
             }
-            prompt += &workset::attachments_block(&req.attachments);
             let msg = self.post_message(
                 &thread.id,
                 "agent",
                 Some(&agent.id),
                 "",
-                serde_json::json!({"backend": backend, "effort": thread.effort, "phase": "в очереди", "steps": []}),
+                serde_json::json!({"backend": backend, "effort": thread.effort, "phase": "в очереди", "steps": [], "compact": compact.is_some()}),
                 MessageStatus::Queued,
                 None,
             )?;
@@ -680,5 +708,15 @@ impl Store {
             self.set_setting("seed:assistant", "1")?;
         }
         Ok(())
+    }
+}
+
+/// `/compact` or `/compact <what to keep in mind>`: the argument, if the text is that command.
+pub fn compact_arg(text: &str) -> Option<&str> {
+    let rest = text.trim().strip_prefix("/compact")?;
+    if rest.is_empty() || rest.starts_with(char::is_whitespace) {
+        Some(rest.trim())
+    } else {
+        None
     }
 }

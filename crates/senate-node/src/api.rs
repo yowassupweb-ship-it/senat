@@ -108,6 +108,18 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/projects/:id/decisions", post(propose_decision))
         .route("/api/projects/:id/git", get(project_git_status))
         .route("/api/projects/:id/diff", get(project_diff))
+        .route("/api/exec-modes", get(exec_modes).put(exec_modes_put))
+        .route("/api/runner/poll", post(runner_poll))
+        .route("/api/runner/job/:id/event", post(runner_event))
+        .route("/api/runner/job/:id/ask", post(runner_ask))
+        .route("/api/runner/skills", get(runner_skills))
+        .route("/api/cloud", get(cloud_list).delete(cloud_delete))
+        .route("/api/cloud/config", get(cloud_config).put(cloud_config_put))
+        .route("/api/cloud/upload", post(cloud_upload).layer(DefaultBodyLimit::max(120 * 1024 * 1024)))
+        .route("/api/cloud/folder", post(cloud_folder))
+        .route("/api/cloud/link", get(cloud_link))
+        .route("/api/threads/:id/git", get(thread_git_status))
+        .route("/api/threads/:id/diff", get(thread_diff))
         .route("/api/decisions/:id/status", post(decision_status))
         // obligations
         .route("/api/obligations", get(obligations).post(create_obligation))
@@ -157,7 +169,9 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/agents/:id/sheet", get(agent_sheet))
         .route("/api/agents/:id/equipment", put(agent_equipment))
         // agent tools bridge (session token)
-        .route("/api/agent/call", post(agent_call));
+        .route("/api/agent/call", post(agent_call))
+        .route("/mcp", post(crate::mcp_http::post_root).get(crate::mcp_http::get_not_allowed))
+        .route("/mcp/:token", post(crate::mcp_http::post_token).get(crate::mcp_http::get_not_allowed));
 
     api.fallback(static_ui)
         .layer(middleware::from_fn_with_state(app.clone(), auth))
@@ -530,7 +544,29 @@ async fn agent_detail(State(a): S, Path(id): Path<String>) -> R {
 }
 
 async fn patch_agent(State(a): S, Path(id): Path<String>, Json(b): Json<Value>) -> R {
-    let mut ag = a.store.update_agent_basics(&id, b["name"].as_str(), b["accent"].as_str(), b["model_pref"].as_str())?;
+    let name = b["name"].as_str().map(str::trim);
+    if let Some(n) = name {
+        if n.is_empty() || n.chars().count() > 60 || n.chars().any(|c| c.is_control()) {
+            return Err(bad("имя: от 1 до 60 символов"));
+        }
+    }
+    let mut ag = a.store.update_agent_basics(&id, name, b["accent"].as_str(), b["model_pref"].as_str())?;
+    // The username is what `@` addresses and what the specialist's folders are named after: they move with it.
+    if let Some(wanted) = b["slug"].as_str() {
+        let (renamed, old) = a.store.set_agent_slug(&ag.id, wanted)?;
+        if old != renamed.slug {
+            for dir in ["skills", "workspaces"] {
+                let (from, to) = (a.cfg.data_dir.join(dir).join(&old), a.cfg.data_dir.join(dir).join(&renamed.slug));
+                if from.is_dir() && !to.exists() {
+                    let _ = std::fs::rename(&from, &to);
+                }
+            }
+        }
+        ag = renamed;
+    }
+    if let Some(g) = b["gender"].as_str() {
+        ag = a.store.set_agent_gender(&ag.id, g)?;
+    }
     // The picture arrives as an upload id; the address stored is the node's own, never the client's.
     if let Some(v) = b.get("avatar_id") {
         let url = match v.as_str().filter(|s| !s.is_empty()) {
@@ -634,6 +670,41 @@ fn project_root(a: &App, id: &str) -> Result<std::path::PathBuf, ApiError> {
     Ok(std::path::PathBuf::from(p.root_path))
 }
 
+/// The folder a chat works in: its project's folder, or the private workspace of the specialist who answers it.
+fn thread_root(a: &App, id: &str) -> Option<std::path::PathBuf> {
+    let t = a.store.get_thread(id).ok()?;
+    if let Some(pid) = &t.project_id {
+        if let Ok(p) = a.store.get_project(pid) {
+            if !p.root_path.is_empty() {
+                return Some(std::path::PathBuf::from(p.root_path));
+            }
+        }
+    }
+    let agent_id = t.agent_id.clone().or_else(|| {
+        a.store.list_messages(id, None, 20).ok()?.iter().rev().find(|m| m.author_kind != "user").and_then(|m| m.author_id.clone())
+    })?;
+    let ag = a.store.get_agent(&agent_id).ok()?;
+    let dir = a.cfg.data_dir.join("workspaces").join(&ag.slug);
+    dir.is_dir().then_some(dir)
+}
+
+async fn thread_git_status(State(a): S, Path(id): Path<String>) -> R {
+    let Some(root) = thread_root(&a, &id) else { return ok(json!({"available": false, "reason": "у чата нет рабочей папки"})) };
+    ok(tokio::task::spawn_blocking(move || project_git::status(&root)).await.unwrap_or(Value::Null))
+}
+
+async fn thread_diff(State(a): S, Path(id): Path<String>, Query(q): Query<HashMap<String, String>>) -> R {
+    let root = thread_root(&a, &id).ok_or_else(|| bad("у чата нет рабочей папки"))?;
+    let path = q.get("path").cloned();
+    if let Some(p) = &path {
+        if p.contains("..") || std::path::Path::new(p).is_absolute() {
+            return Err(bad("недопустимый путь"));
+        }
+    }
+    let d = tokio::task::spawn_blocking(move || project_git::diff(&root, path.as_deref())).await.unwrap_or_default();
+    ok(json!({"diff": d}))
+}
+
 async fn project_git_status(State(a): S, Path(id): Path<String>) -> R {
     let root = match project_root(&a, &id) {
         Ok(r) => r,
@@ -654,6 +725,132 @@ async fn project_diff(State(a): S, Path(id): Path<String>, Query(q): Query<HashM
     }
     let d = tokio::task::spawn_blocking(move || project_git::diff(&root, path.as_deref())).await.unwrap_or_default();
     ok(json!({"diff": d}))
+}
+
+// ---------------- where specialists work ----------------
+
+async fn exec_modes(State(a): S) -> R {
+    let mut modes = serde_json::Map::new();
+    for ag in a.store.list_agents(false)? {
+        let m = a.store.setting(&format!("exec:{}", ag.id))?.unwrap_or_default();
+        modes.insert(ag.id, json!(if m == "local" { "local" } else { "node" }));
+    }
+    ok(json!({"modes": modes, "runner_online": a.runner.online()}))
+}
+
+async fn exec_modes_put(State(a): S, Json(b): Json<Value>) -> R {
+    let id = b["agent_id"].as_str().unwrap_or("");
+    let mode = b["mode"].as_str().unwrap_or("");
+    if !matches!(mode, "local" | "node") {
+        return Err(bad("режим: local или node"));
+    }
+    a.store.get_agent(id)?;
+    a.store.set_setting(&format!("exec:{id}"), mode)?;
+    a.publish("agents", json!({}));
+    exec_modes(State(a)).await
+}
+
+async fn runner_poll(State(a): S) -> R {
+    let job = a.runner.poll().await;
+    ok(json!({"job": job}))
+}
+
+async fn runner_event(State(a): S, Path(id): Path<String>, Json(b): Json<Value>) -> R {
+    crate::runner::job_event(&a, &id, b).await.map(Json).map_err(|e| bad(&e))
+}
+
+async fn runner_ask(State(a): S, Path(id): Path<String>, Json(b): Json<Value>) -> R {
+    crate::runner::job_ask(&a, &id, b).await.map(Json).map_err(|e| bad(&e))
+}
+
+async fn runner_skills(State(a): S, Query(q): Query<HashMap<String, String>>) -> R {
+    let slug = q.get("slug").cloned().unwrap_or_default();
+    if slug.is_empty() || !slug.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        return Err(bad("недопустимый slug"));
+    }
+    ok(crate::runner::skills_files(&a, &slug))
+}
+
+// ---------------- cloud (S3) ----------------
+
+fn cloud_cfg(a: &App) -> Result<crate::s3::Cfg, ApiError> {
+    crate::s3::load(&a.store).ok_or_else(|| bad("облако не настроено: укажите адрес, бакет и ключи в настройках облака"))
+}
+fn cloud_key(q: &HashMap<String, String>, name: &str) -> Result<String, ApiError> {
+    crate::s3::safe_key(q.get(name).map(|s| s.as_str()).unwrap_or("")).ok_or_else(|| bad("недопустимый путь"))
+}
+
+async fn cloud_config(State(a): S) -> R {
+    let g = |k: &str| a.store.setting(k).ok().flatten().unwrap_or_default();
+    ok(json!({
+        "configured": crate::s3::load(&a.store).is_some(),
+        "endpoint": g("s3_endpoint"), "region": g("s3_region"), "bucket": g("s3_bucket"),
+        "access_key": g("s3_access_key"), "prefix": g("s3_prefix"), "has_secret": !g("s3_secret_key").is_empty(),
+    }))
+}
+
+async fn cloud_config_put(State(a): S, Json(b): Json<Value>) -> R {
+    for (field, key) in [("endpoint", "s3_endpoint"), ("region", "s3_region"), ("bucket", "s3_bucket"), ("access_key", "s3_access_key"), ("prefix", "s3_prefix")] {
+        if let Some(v) = b[field].as_str() {
+            a.store.set_setting(key, v.trim())?;
+        }
+    }
+    // an empty secret keeps the stored one
+    if let Some(v) = b["secret_key"].as_str().filter(|v| !v.trim().is_empty()) {
+        a.store.set_setting("s3_secret_key", v.trim())?;
+    }
+    cloud_config(State(a)).await
+}
+
+async fn cloud_list(State(a): S, Query(q): Query<HashMap<String, String>>) -> R {
+    let Some(cfg) = crate::s3::load(&a.store) else { return ok(json!({"configured": false})) };
+    let prefix = cloud_key(&q, "prefix")?;
+    let (folders, files) = crate::s3::list(&cfg, &prefix).await.map_err(|e| bad(&e))?;
+    let folders: Vec<Value> = folders.iter().map(|p| json!({"prefix": p, "name": p.trim_end_matches('/').rsplit('/').next().unwrap_or(p)})).collect();
+    ok(json!({"configured": true, "prefix": prefix, "folders": folders, "files": files}))
+}
+
+async fn cloud_upload(State(a): S, Query(q): Query<HashMap<String, String>>, headers: HeaderMap, body: Bytes) -> R {
+    let cfg = cloud_cfg(&a)?;
+    let prefix = cloud_key(&q, "prefix")?;
+    let name = q.get("name").cloned().unwrap_or_default();
+    if name.is_empty() || name.contains('/') || name.contains('\\') || name == ".." {
+        return Err(bad("недопустимое имя файла"));
+    }
+    let ctype = headers.get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or("application/octet-stream").to_string();
+    let key = format!("{prefix}{name}");
+    crate::s3::put(&cfg, &key, body.to_vec(), &ctype).await.map_err(|e| bad(&e))?;
+    ok(json!({"ok": true, "key": key, "size": body.len()}))
+}
+
+async fn cloud_folder(State(a): S, Json(b): Json<Value>) -> R {
+    let cfg = cloud_cfg(&a)?;
+    let mut q = HashMap::new();
+    q.insert("p".to_string(), format!("{}{}", b["prefix"].as_str().unwrap_or(""), b["name"].as_str().unwrap_or("").trim().trim_matches('/')));
+    let key = cloud_key(&q, "p")?;
+    if key.is_empty() || key.ends_with("//") {
+        return Err(bad("укажите название папки"));
+    }
+    crate::s3::put(&cfg, &format!("{key}/"), vec![], "application/x-directory").await.map_err(|e| bad(&e))?;
+    ok(json!({"ok": true, "prefix": format!("{key}/")}))
+}
+
+async fn cloud_link(State(a): S, Query(q): Query<HashMap<String, String>>) -> R {
+    let cfg = cloud_cfg(&a)?;
+    let key = cloud_key(&q, "key")?;
+    let mins: u64 = q.get("minutes").and_then(|m| m.parse().ok()).unwrap_or(60);
+    let name = key.rsplit('/').next().map(String::from);
+    ok(json!({"url": crate::s3::link(&cfg, &key, mins.clamp(1, 10080) * 60, name.as_deref())}))
+}
+
+async fn cloud_delete(State(a): S, Query(q): Query<HashMap<String, String>>) -> R {
+    let cfg = cloud_cfg(&a)?;
+    let key = cloud_key(&q, "key")?;
+    if key.is_empty() {
+        return Err(bad("нечего удалять"));
+    }
+    let n = if key.ends_with('/') { crate::s3::delete_folder(&cfg, &key).await.map_err(|e| bad(&e))? } else { crate::s3::delete(&cfg, &key).await.map_err(|e| bad(&e))?; 1 };
+    ok(json!({"ok": true, "deleted": n}))
 }
 
 // ---------------- obligations ----------------
@@ -811,6 +1008,7 @@ async fn settings(State(a): S) -> R {
     ok(json!({
         "default_backend": a.store.setting("default_backend")?.unwrap_or_default(),
         "learn_level": crate::reflect::level(&a),
+        "user_name": a.store.setting("user_name")?.unwrap_or_default(),
         "effective_backend": a.backend_default(),
         "data_dir": a.cfg.data_dir.to_string_lossy(),
         "backends": a.caps.read().unwrap().clone(),
@@ -826,6 +1024,11 @@ async fn put_settings(State(a): S, Json(b): Json<Value>) -> R {
             return Err(bad("неизвестный уровень обучения"));
         }
         a.store.set_setting("learn_level", v)?;
+    }
+    if let Some(v) = b["user_name"].as_str() {
+        // how the person wants to be addressed; goes into every specialist's prompt
+        let v: String = v.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(60).collect();
+        a.store.set_setting("user_name", &v)?;
     }
     if b["rescan"].as_bool().unwrap_or(false) {
         let caps = senate_runtime::discover().await;

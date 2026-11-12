@@ -172,6 +172,16 @@ pub fn local_preview_url(raw: &str) -> Option<(String, String)> {
     if raw.is_empty() || raw.len() > 300 || raw.chars().any(|c| c.is_control() || c.is_whitespace() || c == '\\') {
         return None;
     }
+    // Agents often write a bare `localhost:3006`: that is the same address.
+    let lower = raw.to_lowercase();
+    let bare = !lower.starts_with("http://") && !lower.starts_with("https://") && !lower.contains("://");
+    let owned;
+    let raw = if bare {
+        owned = format!("http://{raw}");
+        owned.as_str()
+    } else {
+        raw
+    };
     let rest = raw.strip_prefix("http://").or_else(|| raw.strip_prefix("https://"))?;
     let authority_end = rest.find(|c| c == '/' || c == '?' || c == '#').unwrap_or(rest.len());
     let (authority, tail) = rest.split_at(authority_end);

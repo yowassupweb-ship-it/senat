@@ -49,10 +49,21 @@
     key: 'M15 7a5 5 0 1 1-4.6 6.9L3 21v-3h3v-3h3l1.5-1.5A5 5 0 0 1 15 7zM17 9h.01',
     star: 'M12 2l3 6.9 7.5.7-5.7 5 1.7 7.4L12 18l-6.5 4 1.7-7.4-5.7-5 7.5-.7z',
     bolt: 'M13 2L4 14h7l-1 8 9-12h-7z',
+    cloud: 'M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9z',
+    upload: 'M12 16V4M7 9l5-5 5 5M4 20h16',
+    download: 'M12 4v12M7 11l5 5 5-5M4 20h16',
+    foldernew: 'M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.7-.9l-.8-1.2A2 2 0 0 0 7.9 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2zM12 11v6M9 14h6',
   };
+  // Hand-drawn glyphs (PNG masks in /icons/ui) take the text colour like the strokes below.
+  const GLYPHS = new Set(['new-chat', 'forum', 'permissions', 'effort', 'tool', 'memory-write', 'bash', 'browser', 'read', 'web-search']);
   let { name, size = 16, filled = false }: { name: string; size?: number; filled?: boolean } = $props();
 </script>
 
+{#if name.startsWith('img:')}
+  <img class="pic" src="/icons/{name.slice(4)}.png" width={Math.round(size * 1.25)} height={Math.round(size * 1.25)} alt="" />
+{:else if GLYPHS.has(name)}
+  <span class="glyph" aria-hidden="true" style="--u:url('/icons/ui/{name}.png');width:{Math.round(size * 1.25)}px;height:{Math.round(size * 1.25)}px"></span>
+{:else}
 <svg
   width={size}
   height={size}
@@ -66,3 +77,11 @@
 >
   <path d={paths[name] ?? ''} />
 </svg>
+{/if}
+
+<style>
+  .pic { display: inline-block; flex: none; vertical-align: middle; margin: -3px; object-fit: contain; }
+  :global(:root[data-theme='light']) .pic { filter: brightness(0.42) contrast(1.15); }
+  @media (prefers-color-scheme: light) { :global(:root:not([data-theme='dark'])) .pic { filter: brightness(0.42) contrast(1.15); } }
+  .glyph { display: inline-block; flex: none; vertical-align: middle; margin: -2px; background: currentColor; -webkit-mask: var(--u) center / contain no-repeat; mask: var(--u) center / contain no-repeat; }
+</style>

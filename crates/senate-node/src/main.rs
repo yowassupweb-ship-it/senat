@@ -1,6 +1,7 @@
 //! `senate-node` — headless Senate: owns the data, runs agents, serves the API and the web UI.
 //!
 //!   senate-node serve [--bind 127.0.0.1:7777] [--data DIR] [--token T] [--backend claude|codex|mock]
+//!   senate-node runner --hub URL --token T   carry out "local" specialists' turns on this machine
 //!   senate-node token            print the access token and URL
 //!   senate-node mcp              (internal) MCP bridge launched by agent CLIs
 
@@ -21,6 +22,22 @@ async fn main() {
             match std::fs::read_to_string(dir.join("token")) {
                 Ok(t) => println!("{}", t.trim()),
                 Err(_) => eprintln!("токен ещё не создан — запустите `senate-node serve`"),
+            }
+        }
+        "runner" => {
+            // headless: carry out the turns of "local" specialists on this machine for a hub elsewhere
+            let hub = arg(&args, "--hub").or_else(|| std::env::var("SENATE_HUB").ok()).unwrap_or_default();
+            let token = arg(&args, "--token").or_else(|| std::env::var("SENATE_TOKEN").ok()).unwrap_or_default();
+            if hub.is_empty() || token.is_empty() {
+                eprintln!("укажите --hub АДРЕС и --token ТОКЕН");
+                std::process::exit(2);
+            }
+            let dir = arg(&args, "--data").map(Into::into).unwrap_or_else(default_data_dir);
+            let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+            println!("Senate runner → {hub}");
+            tokio::select! {
+                _ = senate_node::runner::run_client(hub, token, dir, stop_rx) => {}
+                _ = tokio::signal::ctrl_c() => { let _ = stop_tx.send(true); }
             }
         }
         "--version" | "-V" | "version" => println!("senate-node {}", env!("CARGO_PKG_VERSION")),

@@ -25,7 +25,7 @@ fn json_or(s: &str, fallback: serde_json::Value) -> serde_json::Value {
 
 // ---------- row mappers ----------
 
-const AGENT_COLS: &str = "id,slug,name,role,profile,accent,status,model_pref,created_at,updated_at,avatar";
+const AGENT_COLS: &str = "id,slug,name,role,profile,accent,status,model_pref,created_at,updated_at,avatar,gender";
 fn agent_from(r: &Row) -> rusqlite::Result<Agent> {
     Ok(Agent {
         id: r.get(0)?,
@@ -39,6 +39,7 @@ fn agent_from(r: &Row) -> rusqlite::Result<Agent> {
         created_at: r.get(8)?,
         updated_at: r.get(9)?,
         avatar: r.get(10)?,
+        gender: r.get(11)?,
     })
 }
 
@@ -402,6 +403,43 @@ impl Store {
         c.query_row(&format!("SELECT {AGENT_COLS} FROM agents WHERE id=?"), [agent_id], agent_from)
             .optional()?
             .ok_or_else(|| Error::not_found(format!("специалист {agent_id}")))
+    }
+
+    /// The specialist's username (`@slug`), chosen by hand. Latin letters, digits, `-` and `_`, 2–32 long; unique.
+    /// Returns the specialist and the username they had, so the caller can move what is stored under the old one.
+    pub fn set_agent_slug(&self, agent_id: &str, wanted: &str) -> Result<(Agent, String)> {
+        let slug = wanted.trim().trim_start_matches('@').to_lowercase();
+        if slug.len() < 2 || slug.len() > 32 || !slug.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_') {
+            return Err(Error::invalid("username: 2–32 символа, латинские буквы, цифры, «-» и «_»"));
+        }
+        let c = self.lock();
+        let old: String = c
+            .query_row("SELECT slug FROM agents WHERE id=?", [agent_id], |r| r.get(0))
+            .optional()?
+            .ok_or_else(|| Error::not_found(format!("специалист {agent_id}")))?;
+        if old != slug {
+            let taken: Option<String> = c.query_row("SELECT id FROM agents WHERE slug=? OR id=?", params![slug, slug], |r| r.get(0)).optional()?;
+            if taken.is_some() {
+                return Err(Error::invalid(format!("username @{slug} уже занят")));
+            }
+            c.execute("UPDATE agents SET slug=?, updated_at=? WHERE id=?", params![slug, now_ms(), agent_id])?;
+        }
+        let ag = c.query_row(&format!("SELECT {AGENT_COLS} FROM agents WHERE id=?"), [agent_id], agent_from)?;
+        Ok((ag, old))
+    }
+
+    /// "m", "f" or "" (not set).
+    pub fn set_agent_gender(&self, agent_id: &str, gender: &str) -> Result<Agent> {
+        let g = match gender.trim() {
+            "m" | "f" | "" => gender.trim(),
+            _ => return Err(Error::invalid("пол: m, f или пусто")),
+        };
+        let c = self.lock();
+        let n = c.execute("UPDATE agents SET gender=?, updated_at=? WHERE id=?", params![g, now_ms(), agent_id])?;
+        if n == 0 {
+            return Err(Error::not_found(format!("специалист {agent_id}")));
+        }
+        Ok(c.query_row(&format!("SELECT {AGENT_COLS} FROM agents WHERE id=?"), [agent_id], agent_from)?)
     }
 
     /// The specialist's picture: the address of an uploaded image, or "" to go back to the letter.
@@ -857,6 +895,32 @@ impl Store {
     pub fn cli_session_for(&self, thread: &Thread, provider: &str, agent_id: &str) -> Option<String> {
         let get = |k: &str| thread.cli_sessions.get(k).and_then(|v| v.as_str()).map(String::from);
         get(&format!("{provider}:{agent_id}")).or_else(|| if thread.agent_id.as_deref() == Some(agent_id) { get(provider) } else { None })
+    }
+
+    /// Forget the CLI session a specialist continues in this chat: the next turn starts a fresh one.
+    pub fn clear_cli_session_for(&self, thread_id: &str, provider: &str, agent_id: &str) -> Result<()> {
+        let t = self.get_thread(thread_id)?;
+        let mut m = t.cli_sessions.as_object().cloned().unwrap_or_default();
+        m.remove(&format!("{provider}:{agent_id}"));
+        if t.agent_id.as_deref() == Some(agent_id) {
+            m.remove(provider);
+        }
+        self.lock().execute("UPDATE threads SET cli_sessions=? WHERE id=?", params![serde_json::Value::Object(m).to_string(), thread_id])?;
+        Ok(())
+    }
+
+    /// The summary of the earlier part of a chat that a specialist keeps after `/compact`.
+    pub fn compact_summary(thread: &Thread, agent_id: &str) -> Option<String> {
+        thread.meta["compact"][agent_id]["summary"].as_str().map(str::trim).filter(|s| !s.is_empty()).map(String::from)
+    }
+
+    /// Keep a specialist's summary of this chat (replacing the one before it).
+    pub fn set_compact_summary(&self, thread_id: &str, agent_id: &str, summary: &str, messages: usize) -> Result<()> {
+        let t = self.get_thread(thread_id)?;
+        let mut all = t.meta.get("compact").and_then(|v| v.as_object().cloned()).unwrap_or_default();
+        all.insert(agent_id.into(), serde_json::json!({"summary": summary, "at": now_ms(), "messages": messages}));
+        self.set_forum_meta(thread_id, &serde_json::json!({"compact": serde_json::Value::Object(all)}))?;
+        Ok(())
     }
 
     pub fn set_cli_session_for(&self, thread_id: &str, provider: &str, agent_id: &str, session: &str) -> Result<()> {

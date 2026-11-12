@@ -12,14 +12,17 @@
 
   const all = $derived.by<Cmd[]>(() => {
     const out: Cmd[] = [
-      { label: 'Новый чат', icon: 'plus', run: () => go({ kind: 'new' }) },
-      { label: 'Специалисты', icon: 'users', run: () => go({ kind: 'agents' }) },
-      { label: 'Проекты', icon: 'folder', run: () => go({ kind: 'projects' }) },
-      { label: 'Задача', icon: 'checks', run: () => go({ kind: 'obligations' }) },
-      { label: 'Память', icon: 'book', run: () => go({ kind: 'memory' }) },
-      { label: 'MCP', icon: 'plug', run: () => go({ kind: 'mcp' }) },
-      { label: 'API', icon: 'link', run: () => go({ kind: 'api' }) },
-      { label: 'Компании', icon: 'building', run: () => go({ kind: 'companies' }) },
+      { label: 'Новый чат', icon: 'new-chat', run: () => go({ kind: 'new' }) },
+      { label: 'Специалисты', icon: 'img:agents', run: () => go({ kind: 'agents' }) },
+      { label: 'Проекты', icon: 'img:projects', run: () => go({ kind: 'projects' }) },
+      { label: 'Задачи', icon: 'img:obligations', run: () => go({ kind: 'obligations' }) },
+      { label: 'Облако', icon: 'cloud', run: () => go({ kind: 'cloud' }) },
+      { label: 'Запланировано', icon: 'clock', run: () => go({ kind: 'scheduled' }) },
+      { label: 'Память', icon: 'img:memory', run: () => go({ kind: 'memory' }) },
+      { label: 'MCP', icon: 'img:mcp', run: () => go({ kind: 'mcp' }) },
+      { label: 'API', icon: 'img:api', run: () => go({ kind: 'api' }) },
+      { label: 'Компании', icon: 'img:companies', run: () => go({ kind: 'companies' }) },
+      { label: 'Доступы', icon: 'img:access', run: () => go({ kind: 'access' }) },
       { label: 'Настройки', icon: 'sliders', run: () => go({ kind: 'settings' }) },
       { label: 'Тема: светлая', icon: 'sparkle', run: () => applyTheme('light') },
       { label: 'Тема: тёмная', icon: 'sparkle', run: () => applyTheme('dark') },
@@ -27,13 +30,13 @@
     ];
     for (const t of app.threads) out.push({ label: t.title || 'Новый чат', hint: 'чат', icon: 'chat', run: () => go({ kind: 'chat', id: t.id }) });
     for (const p of app.projects) {
-      out.push({ label: p.name, hint: 'проект', icon: 'folder', run: () => go({ kind: 'projects', id: p.id }) });
-      out.push({ label: `Новый чат в «${p.name}»`, icon: 'plus', run: () => go({ kind: 'new', project: p.id }) });
+      out.push({ label: p.name, hint: 'проект', icon: 'img:projects', run: () => go({ kind: 'projects', id: p.id }) });
+      out.push({ label: `Новый чат в «${p.name}»`, icon: 'new-chat', run: () => go({ kind: 'new', project: p.id }) });
     }
     for (const a of app.agents) {
       out.push({
         label: `Написать: ${a.name}`,
-        icon: 'users',
+        icon: 'img:agents',
         run: async () => {
           const t = await post('/api/threads', { agent_id: a.id });
           app.threads.unshift(t);

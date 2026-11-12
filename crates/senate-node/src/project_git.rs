@@ -58,7 +58,15 @@ pub fn status(root: &Path) -> Value {
     }
     let stat = git(root, &["diff", "HEAD", "--shortstat"]).unwrap_or_default().trim().to_string();
     let last = git(root, &["log", "-1", "--pretty=%h %s"]).unwrap_or_default().trim().to_string();
-    json!({"available": true, "branch": branch, "changes": changes, "stat": stat, "last_commit": last})
+    // Commits not pushed yet / not pulled yet, when the branch tracks a remote one.
+    let (behind, ahead) = git(root, &["rev-list", "--left-right", "--count", "@{u}...HEAD"])
+        .and_then(|o| {
+            let mut it = o.split_whitespace().map(|n| n.parse::<u64>().unwrap_or(0));
+            Some((it.next()?, it.next()?))
+        })
+        .map(|(b, a)| (Some(b), Some(a)))
+        .unwrap_or((None, None));
+    json!({"available": true, "branch": branch, "changes": changes, "stat": stat, "last_commit": last, "ahead": ahead, "behind": behind})
 }
 
 /// Unified diff for one path (or everything). Untracked files are shown as additions.

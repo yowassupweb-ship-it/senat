@@ -15,6 +15,30 @@
 
   let { id }: { id?: string } = $props();
 
+  // Where each specialist works: on the node, or on this person's own computer (the Senate app runs the turns).
+  let exec = $state<{ modes: Record<string, string>; runner_online: boolean }>({ modes: {}, runner_online: false });
+  async function loadExec() {
+    try {
+      exec = await get('/api/exec-modes');
+    } catch {
+      /* an older node without the setting */
+    }
+  }
+  let execError = $state('');
+  async function setExec(agentId: string, mode: 'node' | 'local') {
+    execError = '';
+    try {
+      exec = await put('/api/exec-modes', { agent_id: agentId, mode });
+    } catch (e: any) {
+      execError = String(e.message || e).includes('JSON') ? 'Эта нода ещё не обновлена и не умеет переключать режим: она сейчас пересобирается, повторите через несколько минут.' : e.message;
+    }
+  }
+  $effect(() => {
+    loadExec();
+    const t = setInterval(loadExec, 15000);
+    return () => clearInterval(t);
+  });
+
   let creating = $state(false);
   let draft = $state({ name: '', role: 'custom', profile: '', model_pref: '' });
   let error = $state('');
@@ -107,6 +131,41 @@
     await patch(`/api/agents/${id}`, { model_pref: v });
     await refreshList();
     load();
+  }
+  // Name and @username, by hand. The username is what `@` addresses; a stored one is Latin only.
+  let renaming = $state(false);
+  let rn = $state({ name: '', slug: '', gender: '' });
+  const GENDER: Record<string, string> = { '': 'Не указан', m: 'Мужской', f: 'Женский' };
+  let renameError = $state('');
+  let renameBusy = $state(false);
+  function startRename() {
+    if (!sheet) return;
+    rn = { name: sheet.agent.name, slug: sheet.agent.slug, gender: sheet.agent.gender ?? '' };
+    renameError = '';
+    renaming = true;
+  }
+  async function saveRename(e: Event) {
+    e.preventDefault();
+    if (!sheet) return;
+    renameBusy = true;
+    renameError = '';
+    try {
+      const body: Record<string, string> = {};
+      if (rn.name.trim() !== sheet.agent.name) body.name = rn.name.trim();
+      const slug = rn.slug.trim().replace(/^@/, '').toLowerCase();
+      if (slug !== sheet.agent.slug) body.slug = slug;
+      if (rn.gender !== (sheet.agent.gender ?? '')) body.gender = rn.gender;
+      if (Object.keys(body).length) {
+        await patch(`/api/agents/${sheet.agent.id}`, body);
+        await refreshList();
+        await load();
+      }
+      renaming = false;
+    } catch (err: any) {
+      renameError = err.message || 'Не удалось сохранить';
+    } finally {
+      renameBusy = false;
+    }
   }
   async function setAccent(c: string) {
     await patch(`/api/agents/${id}`, { accent: c });
@@ -224,7 +283,22 @@
         </div>
       </div>
       <div class="hbody">
-        <div class="nm"><h1>{a.name}</h1>{#if roleLabel(a)}<span class="chip">{roleLabel(a)}</span>{/if}</div>
+        {#if renaming}
+          <form class="rename" onsubmit={saveRename}>
+            <label>Имя<input class="field" bind:value={rn.name} required maxlength="60" /></label>
+            <label>Username<span class="at"><i>@</i><input class="field" bind:value={rn.slug} required minlength="2" maxlength="32" pattern="[A-Za-z0-9_\-]+" autocapitalize="off" spellcheck="false" /></span></label>
+            <div class="gender" role="radiogroup" aria-label="Пол">
+              {#each Object.entries(GENDER) as [k, label]}
+                <button type="button" role="radio" aria-checked={rn.gender === k} class:on={rn.gender === k} onclick={() => (rn.gender = k)}>{label}</button>
+              {/each}
+            </div>
+            {#if renameError}<p class="badc" role="alert">{renameError}</p>{/if}
+            <div class="row" style="gap:6px"><button class="btn primary sm" type="submit" disabled={renameBusy || !rn.name.trim() || !rn.slug.trim()} aria-busy={renameBusy}>Сохранить</button><button class="btn sm" type="button" onclick={() => (renaming = false)}>Отмена</button></div>
+          </form>
+        {:else}
+          <div class="nm"><h1>{a.name}</h1>{#if roleLabel(a)}<span class="chip">{roleLabel(a)}</span>{/if}<button class="icon-btn" onclick={startRename} aria-label="Изменить имя и username" title="Изменить имя и username"><Icon name="pencil" size={14} /></button></div>
+          <div class="faint handle">@{a.slug}{#if a.gender} · {GENDER[a.gender]}{/if}</div>
+        {/if}
         <div class="row" style="gap:6px;flex-wrap:wrap">
           <span class="chip">{#if a.model_pref}<BrandMark id={a.model_pref} size={12} tint />{/if}{modelTitle(app.accounts, a.model_pref)}</span>
           <span class="chip">{sheet.projects.length} проектов</span>
@@ -242,6 +316,25 @@
 
     <div class="sheet">
       <div class="col">
+        <div class="section">
+          <h2>Где работает</h2>
+          <div class="card pad where">
+            <div class="tabs" role="radiogroup" aria-label="Где работает специалист">
+              <button role="radio" aria-checked={(exec.modes[a.id] ?? 'node') === 'node'} class:on={(exec.modes[a.id] ?? 'node') === 'node'} onclick={() => setExec(a.id, 'node')}><Icon name="server" size={14} />На ноде</button>
+              <button role="radio" aria-checked={exec.modes[a.id] === 'local'} class:on={exec.modes[a.id] === 'local'} onclick={() => setExec(a.id, 'local')}><Icon name="monitor" size={14} />Локально</button>
+            </div>
+            <p class="muted" style="margin:10px 0 0">
+              {#if exec.modes[a.id] === 'local'}
+                Ходы этого специалиста выполняет приложение Senate на вашем компьютере: его папки, его программы и доступы, его тестовые серверы. Память, чаты и задачи остаются на ноде.
+                <b class={exec.runner_online ? 'okc' : 'badc'}>{exec.runner_online ? 'Приложение на компьютере подключено.' : 'Приложение на компьютере не подключено: пока оно не запущено, специалист работать не сможет.'}</b>
+              {:else}
+                Специалист работает на ноде: в её папках и с её программами. Тестовые серверы, которые он запускает, видны только на ноде.
+              {/if}
+            </p>
+            {#if execError}<p class="badc" role="alert" style="margin:8px 0 0">{execError}</p>{/if}
+          </div>
+        </div>
+
         <div class="section">
           <h2>Характеристики</h2>
           <div class="tiles">
@@ -369,6 +462,10 @@
 {/if}
 
 <style>
+  .where .tabs { display: inline-flex; }
+  .where .tabs button { display: inline-flex; align-items: center; gap: 6px; }
+  .okc { color: var(--ok); font-weight: 600; }
+  .badc { color: var(--warn, #d29922); font-weight: 600; }
   .hero-card {
     padding: 16px 16px 14px;
     display: flex;
@@ -509,6 +606,16 @@
     background: var(--c);
     transition: width 0.5s var(--ease);
   }
+  .handle { font-size: 13px; margin: -2px 0 2px; }
+  .rename { display: flex; flex-direction: column; gap: 10px; max-width: 360px; }
+  .rename label { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; font-weight: 500; }
+  .at { display: flex; align-items: center; gap: 6px; }
+  .at i { font-style: normal; color: var(--fg-3); font-size: 15px; }
+  .at .field { flex: 1; }
+  .gender { display: flex; gap: 4px; padding: 3px; border-radius: var(--radius); background: var(--bg-sunken); width: fit-content; }
+  .gender button { padding: 5px 11px; border-radius: calc(var(--radius) - 3px); font-size: 12.5px; color: var(--fg-2); }
+  .gender button.on { background: var(--bg-raised); color: var(--fg); box-shadow: var(--shadow-1); }
+  .gender button:focus-visible { outline: none; box-shadow: var(--focus-ring); }
   .swatches {
     display: grid;
     grid-template-columns: repeat(5, 16px);

@@ -13,7 +13,7 @@
 
 <div class="perm" data-state={ask.state} role="group" aria-label="Запрос разрешения">
   <div class="top">
-    <span class="ic"><Icon name="shield" size={16} /></span>
+    <span class="ic"><Icon name="permissions" size={16} /></span>
     <div class="q">
       <b>{#if ask.state === 'pending'}Нужно ваше разрешение{:else if ask.state === 'allowed'}Разрешено{:else}Отклонено{/if}</b>
       <span class="muted">{ask.question}</span>

@@ -361,6 +361,10 @@ CREATE TABLE routines (
   UNIQUE(agent_id, name)
 );
 "#,
+    // 10 - a specialist's gender: 'm' | 'f' | '' (not set). It decides how they speak about themselves.
+    r#"
+ALTER TABLE agents ADD COLUMN gender TEXT NOT NULL DEFAULT '';
+"#,
 ];
 
 pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {

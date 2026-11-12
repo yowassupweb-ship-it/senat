@@ -1,13 +1,16 @@
 <script lang="ts">
   import { get } from '../lib/api';
-  import { app, loadGit } from '../lib/store.svelte';
+  import { app, loadGit, loadThreadGit } from '../lib/store.svelte';
   import { baseName } from '../lib/format';
   import Diff from './Diff.svelte';
   import Icon from './Icon.svelte';
 
-  let { projectId }: { projectId: string } = $props();
+  // `threadId`: the folder the chat works in (works without a project too); `projectId`: that project's folder.
+  let { projectId = '', threadId = '' }: { projectId?: string; threadId?: string } = $props();
 
-  const git = $derived(app.git[projectId]);
+  const api = $derived(threadId ? `/api/threads/${threadId}` : `/api/projects/${projectId}`);
+  const reload = () => (threadId ? loadThreadGit(threadId) : loadGit(projectId));
+  const git = $derived(app.git[threadId ? 't:' + threadId : projectId]);
   let selected = $state<string | null>(null);
   let diff = $state('');
   let loading = $state(false);
@@ -16,7 +19,7 @@
     selected = path;
     loading = true;
     try {
-      const r = await get(`/api/projects/${projectId}/diff${path ? `?path=${encodeURIComponent(path)}` : ''}`);
+      const r = await get(`${api}/diff${path ? `?path=${encodeURIComponent(path)}` : ''}`);
       diff = r.diff;
     } catch (e: any) {
       diff = '';
@@ -29,7 +32,9 @@
 
   // Refresh when the panel opens and when the agent finishes something (store reloads git on message done).
   $effect(() => {
-    loadGit(projectId);
+    threadId;
+    projectId;
+    reload();
   });
   $effect(() => {
     // keep an open diff fresh when the change list changes
@@ -43,7 +48,7 @@
     <b>Изменения</b>
     <span class="faint">{git?.available ? git.stat || 'без изменений' : ''}</span>
     <span class="grow"></span>
-    <button class="icon-btn" onclick={() => loadGit(projectId)} aria-label="Обновить"><Icon name="refresh" size={14} /></button>
+    <button class="icon-btn" onclick={reload} aria-label="Обновить"><Icon name="refresh" size={14} /></button>
     <button class="icon-btn" onclick={() => (app.panel = false)} aria-label="Закрыть"><Icon name="x" size={14} /></button>
   </header>
 

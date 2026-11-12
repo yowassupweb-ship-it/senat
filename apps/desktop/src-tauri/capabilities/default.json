@@ -1,7 +1,15 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "The window shows a page served by the embedded node and needs no native IPC.",
-  "windows": ["main"],
-  "permissions": []
+  "description": "The window shows the bundled UI, which draws its own header and asks for the window buttons.",
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "core:window:allow-minimize",
+    "core:window:allow-toggle-maximize",
+    "core:window:allow-close",
+    "core:window:allow-start-dragging",
+    "core:window:allow-is-maximized"
+  ]
 }

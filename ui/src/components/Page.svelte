@@ -47,6 +47,7 @@
   .body {
     flex: 1;
     overflow-y: auto;
+    scrollbar-gutter: stable;
     padding: 12px 28px 40px;
   }
   .in {

@@ -8,6 +8,8 @@ export type View =
   | { kind: 'projects'; id?: string }
   | { kind: 'companies'; id?: string }
   | { kind: 'obligations'; id?: string }
+  | { kind: 'scheduled' }
+  | { kind: 'cloud' }
   | { kind: 'memory' }
   | { kind: 'mcp' }
   | { kind: 'api' }
@@ -56,6 +58,8 @@ export function viewToHash(v: View): string {
       return v.project ? `#/new/${v.project}` : '#/';
     case 'chat':
       return `#/chat/${v.id}`;
+    case 'scheduled':
+    case 'cloud':
     case 'memory':
     case 'mcp':
     case 'api':
@@ -78,6 +82,8 @@ export function hashToView(h: string): View {
     case 'companies':
     case 'obligations':
       return { kind, id } as View;
+    case 'scheduled':
+    case 'cloud':
     case 'memory':
     case 'mcp':
     case 'api':
@@ -176,6 +182,15 @@ export async function loadGit(projectId: string) {
   }
 }
 
+/** Git state of whatever folder a chat works in (its project's folder or the specialist's own workspace). */
+export async function loadThreadGit(threadId: string) {
+  try {
+    app.git['t:' + threadId] = await get(`/api/threads/${threadId}/git`);
+  } catch {
+    // keep the last known state: a failed refresh must not make the git bar vanish
+  }
+}
+
 // ---------- live events ----------
 let stop: (() => void) | null = null;
 const listeners = new Set<(type: string, data: any) => void>();
@@ -195,6 +210,7 @@ export function startEvents() {
           refreshAgents(); // finished work changes level and open tasks
           const t = threadById(data.thread_id);
           if (t?.project_id) loadGit(t.project_id);
+          loadThreadGit(data.thread_id);
         }
       } else if (type === 'thread') refreshThreads();
       else if (type === 'projects') {

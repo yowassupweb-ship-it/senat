@@ -211,11 +211,14 @@ pub(crate) async fn execute(app: Arc<App>, s: Session) {
 
     let is_chat = s.obligation_id.is_none();
     let provider = s.backend.split(':').next().unwrap_or("").to_string();
+    // A specialist who works on a person's computer keeps CLI sessions there: they are not the node's sessions.
+    let local = store.setting(&format!("exec:{}", agent.id)).ok().flatten().as_deref() == Some("local");
+    let session_key = if local { format!("{provider}@local") } else { provider.clone() };
     let is_forum_thread = thread.as_ref().map(|t| t.kind == ThreadKind::Forum).unwrap_or(false);
     // One CLI session per specialist in a chat, not per chat: two specialists sharing one would resume the same
     // session (a CLI lets only one process write to it) and would wear each other's identity and history.
     // Chats from before keep their single session for the specialist the chat is pinned to.
-    let resume = if is_chat && !is_forum_thread { thread.as_ref().and_then(|t| store.cli_session_for(t, &provider, &agent.id)) } else { None };
+    let resume = if is_chat && !is_forum_thread { thread.as_ref().and_then(|t| store.cli_session_for(t, &session_key, &agent.id)) } else { None };
     let company_id = thread.as_ref().and_then(|t| t.company_id.clone()).or_else(|| project.as_ref().and_then(|p| p.company_id.clone()));
     let mut system_prompt = senate_core::workset::system_prompt(store, &agent, project.as_ref(), company_id.as_deref()).unwrap_or_default();
     system_prompt += &crate::skills::block_for(&app.cfg.data_dir, &agent.slug);
@@ -240,6 +243,15 @@ pub(crate) async fn execute(app: Arc<App>, s: Session) {
         env: vec![("SENATE_HUB".into(), app.url()), ("SENATE_SESSION_TOKEN".into(), token.clone())],
     });
 
+    // After `/compact` a fresh session knows the chat only through the specialist's own summary of it.
+    let compact_turn = store.get_message(&msg_id).map(|m| m.props["compact"].as_bool().unwrap_or(false)).unwrap_or(false);
+    let mut turn_prompt = s.prompt.clone();
+    if resume.is_none() && !compact_turn {
+        if let Some(sum) = thread.as_ref().and_then(|t| senate_core::store::Store::compact_summary(t, &agent.id)) {
+            turn_prompt = senate_core::workset::compact_preamble(&sum) + &turn_prompt;
+        }
+    }
+
     let effort = thread.as_ref().map(|t| t.effort.clone()).filter(|e| !e.is_empty());
     let cwd_for_rules = cwd.clone();
     let spec = RunSpec {
@@ -248,7 +260,7 @@ pub(crate) async fn execute(app: Arc<App>, s: Session) {
         mode: parse_mode(thread.as_ref(), project.as_ref()),
         cwd,
         system_prompt,
-        prompt: s.prompt.clone(),
+        prompt: turn_prompt,
         resume,
         mcp,
         // The specialist's own equipment: only the MCP servers assigned to them (or shared).
@@ -306,7 +318,7 @@ pub(crate) async fn execute(app: Arc<App>, s: Session) {
         })
     };
 
-    let outcome = senate_runtime::run(spec, &approver, tx, cancel_rx).await;
+    let outcome = if local { crate::runner::remote_run(&app, spec, &agent.slug, &approver, tx, cancel_rx).await } else { senate_runtime::run(spec, &approver, tx, cancel_rx).await };
     let sid = consumer.await.ok().flatten();
 
     // ---- finalize ----
@@ -347,7 +359,20 @@ pub(crate) async fn execute(app: Arc<App>, s: Session) {
     }
     if let (Some(t), Some(id)) = (thread.as_ref(), outcome.session_id.as_ref().or(sid.as_ref())) {
         if is_chat && !is_forum_thread && !provider.is_empty() && provider != "mock" {
-            let _ = store.set_cli_session_for(&t.id, &provider, &s.agent_id, id);
+            let _ = store.set_cli_session_for(&t.id, &session_key, &s.agent_id, id);
+        }
+    }
+    // `/compact` done: keep the summary, drop the long session; the next turn starts a fresh one with the summary.
+    if compact_turn && status == MessageStatus::Done && !outcome.text.trim().is_empty() && is_chat && !is_forum_thread {
+        if let Some(t) = thread.as_ref() {
+            let n = store.list_messages(&t.id, None, 2000).map(|v| v.len()).unwrap_or(0);
+            if store.set_compact_summary(&t.id, &agent.id, outcome.text.trim(), n).is_ok() {
+                let _ = store.clear_cli_session_for(&t.id, &session_key, &agent.id);
+                if let Ok(m) = store.post_message(&t.id, "system", None, &format!("Контекст сжат. {} продолжит со своей сводкой в новой сессии.", agent.name), json!({}), MessageStatus::Done, None) {
+                    app.publish("message", serde_json::to_value(&m).unwrap_or_default());
+                }
+                app.publish("thread", json!({"id": t.id}));
+            }
         }
     }
     let sess_status = match status {

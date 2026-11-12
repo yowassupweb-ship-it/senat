@@ -1,9 +1,10 @@
 <script lang="ts">
   import { app, attentionCount, go, type View } from '../lib/store.svelte';
+  import { patch } from '../lib/api';
+  import { ctx, type MenuItem } from '../lib/contextmenu.svelte';
   import { timeAgo } from '../lib/format';
   import type { Thread } from '../lib/types';
   import Icon from './Icon.svelte';
-  import Emblem from './Emblem.svelte';
   import { focusScope } from '../lib/focus';
 
   let { onforum }: { onforum: () => void } = $props();
@@ -18,28 +19,94 @@
   const lounge = $derived(app.threads.find((t) => t.kind === 'lounge'));
   const forums = $derived(app.threads.filter((t) => t.kind === 'forum' && match(t)));
   const chats = $derived(app.threads.filter((t) => t.kind === 'chat' && match(t)));
-  const looseChats = $derived(chats);
+
+  // Chats are kept by company: a chat belongs to the company it was started in, or to the company of its project.
+  const companyOf = (t: Thread) => t.company_id ?? app.projects.find((p) => p.id === t.project_id)?.company_id ?? null;
+  const byCompany = $derived.by(() => {
+    const known = new Set(app.companies.map((c) => c.id));
+    const map = new Map<string, Thread[]>();
+    const loose: Thread[] = [];
+    for (const t of chats) {
+      const c = companyOf(t);
+      if (c && known.has(c)) map.set(c, [...(map.get(c) ?? []), t]);
+      else loose.push(t);
+    }
+    return { groups: app.companies.filter((c) => map.has(c.id)).map((c) => ({ id: c.id, name: c.name, items: map.get(c.id)! })), loose };
+  });
+  const looseChats = $derived(byCompany.loose);
+
+  // A folded company stays folded between launches; a search opens everything it finds.
+  let folded = $state<string[]>((() => {
+    try { return JSON.parse(localStorage.getItem('senate.side.folded') || '[]'); } catch { return []; }
+  })());
+  const isFolded = (id: string) => !q && folded.includes(id);
+  function fold(id: string) {
+    folded = folded.includes(id) ? folded.filter((x) => x !== id) : [...folded, id];
+    try { localStorage.setItem('senate.side.folded', JSON.stringify(folded)); } catch { /* storage unavailable */ }
+  }
+
+  let renaming = $state<string | null>(null);
+  let draft = $state('');
+  function focusInput(n: HTMLInputElement) {
+    n.focus();
+    n.select();
+  }
+  function startRename(t: Thread) {
+    renaming = t.id;
+    draft = t.title || '';
+  }
+  async function commitRename(t: Thread) {
+    if (renaming !== t.id) return;
+    const v = draft.trim();
+    renaming = null;
+    if (v && v !== t.title) await patch(`/api/threads/${t.id}`, { title: v });
+  }
+  const threadMenu = (t: Thread): MenuItem[] => [
+    { label: 'Открыть', icon: 'chat', run: () => go({ kind: 'chat', id: t.id }) },
+    { label: 'Переименовать', icon: 'pencil', run: () => startRename(t) },
+    { label: t.pinned ? 'Открепить' : 'Закрепить', icon: 'pin', run: () => patch(`/api/threads/${t.id}`, { pinned: !t.pinned }) },
+    { sep: true },
+    { label: 'Копировать название', icon: 'copy', run: () => navigator.clipboard?.writeText(t.title || '') },
+    { sep: true },
+    {
+      label: 'Убрать в архив',
+      icon: 'archive',
+      danger: true,
+      run: async () => {
+        await patch(`/api/threads/${t.id}`, { archived: true });
+        if (isChat(t.id)) go({ kind: 'new' });
+      },
+    },
+  ];
 
   const cur = $derived(app.view);
   const isChat = (id: string) => cur.kind === 'chat' && cur.id === id;
+  const chrome = !!(window as any).__SENATE__?.chrome;
   const isView = (k: View['kind']) => cur.kind === k;
   const badge = $derived(attentionCount());
 
-  const nav: { kind: View['kind']; label: string; icon: string }[] = [
-    { kind: 'agents', label: 'Специалисты', icon: 'users' },
-    { kind: 'companies', label: 'Компании', icon: 'building' },
-    { kind: 'projects', label: 'Проекты', icon: 'folder' },
-    { kind: 'obligations', label: 'Задачи', icon: 'checks' },
-    { kind: 'memory', label: 'Память', icon: 'book' },
-    { kind: 'mcp', label: 'MCP', icon: 'plug' },
-    { kind: 'api', label: 'API', icon: 'link' },
-    { kind: 'access', label: 'Доступы', icon: 'key' },
+  const nav: { kind: View['kind']; label: string; icon: string; img?: string }[] = [
+    { kind: 'agents', label: 'Специалисты', icon: 'users', img: 'agents' },
+    { kind: 'companies', label: 'Компании', icon: 'building', img: 'companies' },
+    { kind: 'projects', label: 'Проекты', icon: 'folder', img: 'projects' },
+    { kind: 'obligations', label: 'Задачи', icon: 'checks', img: 'obligations' },
+    { kind: 'scheduled', label: 'Запланировано', icon: 'clock' },
+    { kind: 'cloud', label: 'Облако', icon: 'cloud' },
+    { kind: 'memory', label: 'Память', icon: 'book', img: 'memory' },
+    { kind: 'mcp', label: 'MCP', icon: 'plug', img: 'mcp' },
+    { kind: 'api', label: 'API', icon: 'link', img: 'api' },
+    { kind: 'access', label: 'Доступы', icon: 'key', img: 'access' },
     { kind: 'settings', label: 'Настройки', icon: 'sliders' },
   ];
 </script>
 
 {#snippet item(t: Thread, deep: boolean)}
-  <button class="chat" class:deep class:on={isChat(t.id)} aria-current={isChat(t.id) ? "page" : undefined} onclick={() => go({ kind: 'chat', id: t.id })} title={t.title}>
+  {#if renaming === t.id}
+    <div class="chat rename" class:deep>
+      <input class="field" bind:value={draft} aria-label="Название чата" onkeydown={(e) => { if (e.key === 'Enter') commitRename(t); else if (e.key === 'Escape') renaming = null; }} onblur={() => commitRename(t)} use:focusInput />
+    </div>
+  {:else}
+  <button use:ctx={() => threadMenu(t)} class="chat" class:deep class:on={isChat(t.id)} aria-current={isChat(t.id) ? "page" : undefined} onclick={() => go({ kind: 'chat', id: t.id })} title={t.title}>
     {#if t.kind === 'forum'}<span class="fi"><Icon name="forum" size={13} /></span>{/if}
     <span class="t">{t.title || 'Новый чат'}</span>
     {#if t.awaiting}<span class="chip warn" title="Ждёт вашего решения">решение</span>
@@ -47,20 +114,20 @@
     {:else if t.pinned}<Icon name="pin" size={11} />
     {:else}<span class="when faint">{timeAgo(t.updated_at)}</span>{/if}
   </button>
+  {/if}
 {/snippet}
 
 <svelte:window onresize={() => { if (window.innerWidth > 760) app.sidebar = false; }} />
 <nav bind:this={navigation} class="side" class:open={app.sidebar} aria-label="Навигация">
-  <div class="brand">
-    <span class="logo" aria-hidden="true"><Emblem size={28} id="sb" /></span>
-    <b>Senate</b>
+  <div class="brand" hidden={chrome}>
+    {#if !chrome}<img class="logo" src="/logo.png" width="52" height="52" alt="Senate" />{/if}
     {#if !app.online}<span class="chip bad" title="Нет связи с нодой">офлайн</span>{/if}
     <span class="grow"></span>
     <button class="icon-btn" onclick={() => (app.palette = true)} aria-label="Поиск и команды" title="Поиск (Ctrl+K)"><Icon name="search" size={15} /></button>
   </div>
 
   <div class="actions">
-    <button class="new" onclick={() => go({ kind: 'new' })}><Icon name="plus" size={15} />Новый чат</button>
+    <button class="new" onclick={() => go({ kind: 'new' })}><Icon name="new-chat" size={15} />Новый чат</button>
     <button class="new ghost" onclick={onforum} title="Обсудить широкий вопрос вместе и спланировать работу"><Icon name="forum" size={15} />Форум</button>
   </div>
 
@@ -84,19 +151,31 @@
       </div>
     {/if}
 
+    {#each byCompany.groups as g (g.id)}
+      <div class="group">
+        <div class="gh">
+          <button class="gtoggle" aria-expanded={!isFolded(g.id)} onclick={() => fold(g.id)} title={g.name}>
+            <span class="chev" class:shut={isFolded(g.id)}><Icon name="down" size={11} /></span>
+            <Icon name="building" size={13} /><span class="gt">{g.name}</span><span class="cnt faint">{g.items.length}</span>
+          </button>
+        </div>
+        {#if !isFolded(g.id)}{#each g.items as t (t.id)}{@render item(t, false)}{/each}{/if}
+      </div>
+    {/each}
+
     {#if looseChats.length}
       <div class="group">
-        <div class="gh"><span class="gtoggle static"><Icon name="chat" size={13} /><span class="gt">Чаты</span></span></div>
+        <div class="gh"><span class="gtoggle static"><Icon name="chat" size={13} /><span class="gt">{byCompany.groups.length ? 'Без компании' : 'Чаты'}</span></span></div>
         {#each looseChats as t (t.id)}{@render item(t, false)}{/each}
       </div>
     {/if}
-    {#if q && !looseChats.length && !forums.length}<p class="faint pad">Ничего не найдено</p>{/if}
+    {#if q && !chats.length && !forums.length}<p class="faint pad">Ничего не найдено</p>{/if}
   </div>
 
   <div class="foot">
     {#each nav as n (n.kind)}
       <button class="nav" class:on={isView(n.kind)} aria-current={isView(n.kind) ? "page" : undefined} onclick={() => go({ kind: n.kind } as View)}>
-        <Icon name={n.icon} size={15} />{n.label}
+        <span class="ico">{#if n.img}<img class="nimg" src={`/icons/${n.img}.png`} width="17" height="17" alt="" />{:else}<Icon name={n.icon} size={13} />{/if}</span>{n.label}
         {#if n.kind === 'obligations' && badge}<span class="badge">{badge}</span>{/if}
       </button>
     {/each}
@@ -113,6 +192,9 @@
     flex-direction: column;
     min-height: 0;
   }
+  .brand[hidden] { display: none; }
+  .rename { padding: 2px 4px; }
+  .rename .field { height: 30px; width: 100%; }
   .brand {
     height: 46px;
     display: flex;
@@ -252,6 +334,10 @@
     font-size: 12.5px;
     border-radius: var(--radius-s);
   }
+  button.gtoggle { text-align: left; width: 100%; }
+  .chev { display: inline-flex; width: 11px; transition: transform 0.12s var(--ease); }
+  .chev.shut { transform: rotate(-90deg); }
+  .cnt { margin-left: auto; font-size: 11.5px; font-weight: 400; }
   .gtoggle.static {
     cursor: default;
   }
@@ -293,6 +379,12 @@
     background: var(--bg-active);
     color: var(--fg);
   }
+  .ico { width: 17px; height: 17px; display: grid; place-items: center; flex: none; }
+  .nimg { width: 17px; height: 17px; margin: 0; flex: none; opacity: 0.92; }
+  .nav:hover .nimg, .nav.on .nimg { opacity: 1; }
+  /* the glass icons are light grey: darken them on a light surface */
+  :global(:root[data-theme='light']) .nimg { filter: brightness(0.42) contrast(1.15); }
+  @media (prefers-color-scheme: light) { :global(:root:not([data-theme='dark'])) .nimg { filter: brightness(0.42) contrast(1.15); } }
   .badge {
     margin-left: auto;
     min-width: 18px;
@@ -307,17 +399,16 @@
     place-items: center;
   }
   .side { background: var(--bg-sidebar); backdrop-filter: blur(26px) saturate(1.4); padding: 10px 8px 10px; width: var(--sidebar-w); border-right: 1px solid var(--line); }
-  .brand { height: 48px; padding-bottom: 8px; gap: 9px; }
-  .brand b { font-size: 15px; font-weight: 650; letter-spacing: -0.02em; }
-  .logo { width: 22px; height: 22px; border-radius: 0; background: none; box-shadow: none; display: inline-flex; }
+  .brand { height: 68px; padding: 6px 10px 6px 12px; gap: 9px; }
+  .logo { width: 52px; height: 52px; border-radius: 0; background: none; box-shadow: none; display: block; object-fit: contain; flex: none; }
   .search { height: 32px; box-shadow: inset 0 0 0 1px var(--line); }
   .search:focus-within { box-shadow: var(--focus-ring); }
   .chat { min-height: 34px; margin-bottom: 2px; }
-  .nav { height: 34px; }
+  .nav { height: 26px; font-size: 12.5px; gap: 8px; padding: 0 8px; }
   .chat, .nav { border-radius: var(--radius-s); transition: background 0.12s var(--ease), color 0.12s var(--ease); }
   .chat.on, .nav.on { background: var(--bg-active); color: var(--fg); font-weight: 550; }
   .chat.on .when { color: var(--fg-2); }
-  .foot { padding-top: 4px; }
+  .foot { padding-top: 2px; }
   @media (max-width: 760px) {
     .side { display: none; position: fixed; inset: 0 auto 0 0; z-index: 60; width: min(290px, 90vw); box-shadow: var(--shadow-2); }
     .side.open { display: flex; }

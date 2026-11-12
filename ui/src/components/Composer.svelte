@@ -13,7 +13,7 @@
 
 <script lang="ts">
   import { app } from '../lib/store.svelte';
-  import { post, upload, type Uploaded } from '../lib/api';
+  import { openExternal, post, upload, type Uploaded } from '../lib/api';
   import { MODE_LABEL } from '../lib/format';
   import BrandMark from './BrandMark.svelte';
   import Avatar from './Avatar.svelte';
@@ -22,6 +22,8 @@
 
   let {
     settings,
+    picked,
+    ontoggleagent,
     onchange,
     onsend,
     onstop,
@@ -40,6 +42,9 @@
     onpause,
     onresume,
   }: {
+    /** Specialists addressed together (when given, the specialist menu allows several). */
+    picked?: string[];
+    ontoggleagent?: (id: string) => void;
     settings: Settings;
     onchange: (s: Settings) => void;
     onsend: (text: string, attachments?: Uploaded[]) => void | boolean | Promise<void | boolean>;
@@ -54,7 +59,7 @@
     preview?: { url: string; label: string };
     threadId?: string;
     /** Branch and number of changes of the project folder; the chip toggles the changes panel. */
-    git?: { label: string; count: number; active: boolean };
+    git?: { label: string; count: number; active: boolean; title?: string };
     ongit?: () => void;
     /** The specialist's current plan (their TodoWrite list): intermediate tasks of this run. */
     todos?: Todo[];
@@ -92,15 +97,8 @@
   // The desktop window has no way to open external links itself: the node opens it in the system browser.
   async function openPreview(e: MouseEvent) {
     if (!preview) return;
-    if ((window as any).__SENATE__ && threadId) {
-      e.preventDefault();
-      try {
-        await post(`/api/threads/${threadId}/preview/open`);
-      } catch {
-        window.open(preview.url, '_blank', 'noopener');
-      }
-    }
-    // in a plain browser the anchor's own target=_blank does the job
+    // the desktop window opens it itself (on this computer, not on the node); a plain browser follows the anchor
+    if (openExternal(preview.url)) e.preventDefault();
   }
 
   let text = $state('');
@@ -200,7 +198,30 @@
     if (autofocus && ta) ta.focus();
   });
 
-  const candidates = $derived(mention ? app.agents.filter((a) => (a.slug + ' ' + a.name).toLowerCase().includes(mention!.q.toLowerCase())).slice(0, 6) : []);
+  // the highlighted row stays in view when the list scrolls
+  function keepVisible(node: HTMLElement, active: boolean) {
+    if (active) node.scrollIntoView({ block: 'nearest' });
+    return { update: (a: boolean) => { if (a) node.scrollIntoView({ block: 'nearest' }); } };
+  }
+  const candidates = $derived(mention ? app.agents.filter((a) => (a.slug + ' ' + a.name).toLowerCase().includes(mention!.q.toLowerCase())) : []);
+
+  // Slash commands. Only one so far: /compact shortens a long chat by having the specialist write a summary and
+  // carry on from it in a fresh session, so a chat can go on for as long as the work does.
+  const COMMANDS = [{ name: 'compact', hint: 'Сжать контекст чата: специалист сделает сводку и продолжит с неё. После команды можно добавить, что учесть.' }];
+  const slash = $derived.by(() => {
+    if (compact || mention) return [];
+    const m = /^\/([a-z]*)$/i.exec(text);
+    return m && text !== '/compact' ? COMMANDS.filter((c) => c.name.startsWith(m[1].toLowerCase())) : [];
+  });
+  function pickSlash(name: string) {
+    text = `/${name} `;
+    app.drafts[draftKey] = text;
+    queueMicrotask(() => {
+      ta.focus();
+      ta.setSelectionRange(text.length, text.length);
+      resize();
+    });
+  }
 
   function onInput() {
     app.drafts[draftKey] = text;
@@ -266,6 +287,11 @@
         return;
       }
     }
+    if (slash.length && (e.key === 'Enter' || e.key === 'Tab')) {
+      e.preventDefault();
+      pickSlash(slash[0].name);
+      return;
+    }
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
       e.preventDefault();
       submit();
@@ -280,6 +306,8 @@
     { id: 'high', label: 'Тщательно', hint: 'Дольше думает, дороже по лимитам' },
   ];
   const curAgent = $derived(app.agents.find((a) => a.id === settings.agent));
+  const group = $derived((picked ?? []).map((id) => app.agents.find((a) => a.id === id)).filter((a): a is NonNullable<typeof a> => !!a));
+  const groupLabel = $derived(group.length === 1 ? group[0].name : group.length === 2 ? `${group[0].name}, ${group[1].name}` : `${group.length} специалиста`);
   const effMode = $derived(settings.mode || projectMode || 'edit');
 </script>
 
@@ -289,9 +317,19 @@
   {#if mention && candidates.length}
     <div class="mentions" role="listbox">
       {#each candidates as a, i (a.id)}
-        <button class="m" class:on={i === sel} role="option" aria-selected={i === sel} onmousedown={(e) => e.preventDefault()} onclick={() => pickMention(a.slug)}>
+        <button class="m" class:on={i === sel} use:keepVisible={i === sel} role="option" aria-selected={i === sel} onmousedown={(e) => e.preventDefault()} onclick={() => pickMention(a.slug)}>
           <Avatar name={a.name} color={a.accent} size={20} />
           <b>{a.name}</b><span class="faint">@{a.slug}</span>
+        </button>
+      {/each}
+    </div>
+  {/if}
+
+  {#if slash.length}
+    <div class="mentions" role="listbox" aria-label="Команды">
+      {#each slash as c (c.name)}
+        <button class="m on" role="option" aria-selected="true" onmousedown={(e) => e.preventDefault()} onclick={() => pickSlash(c.name)}>
+          <b>/{c.name}</b><span class="faint">{c.hint}</span>
         </button>
       {/each}
     </div>
@@ -314,19 +352,24 @@
     <div class="bar">
       <button class="icon-btn" type="button" onclick={() => fileInput.click()} aria-label="Прикрепить файл или скриншот" title="Прикрепить файл (или вставьте скриншот: Ctrl+V)"><Icon name="clip" size={16} /></button>
       {#if !compact}
-        <Dropdown value={settings.agent} options={agentOpts} up label="Специалист" onpick={(id) => onchange({ ...settings, agent: id })}>
+        <Dropdown value={settings.agent} options={agentOpts} up label="Специалист" selected={ontoggleagent ? (picked ?? []) : undefined} ontoggle={ontoggleagent} onpick={(id) => onchange({ ...settings, agent: id })}>
           {#snippet children(cur)}
-            {#if curAgent}<Avatar name={curAgent.name} color={curAgent.accent} size={16} />{:else}<Icon name="users" size={14} />{/if}
-            {cur?.label}
+            {#if ontoggleagent && group.length}
+              <span class="stack">{#each group.slice(0, 3) as g (g.id)}<Avatar name={g.name} color={g.accent} size={16} />{/each}</span>
+              <span class="gl2">{groupLabel}</span>
+            {:else}
+              {#if curAgent}<Avatar name={curAgent.name} color={curAgent.accent} size={16} />{:else}<Icon name="img:agents" size={14} />{/if}
+              {cur?.label}
+            {/if}
           {/snippet}
         </Dropdown>
       {/if}
       {#if !compact}
         <Dropdown value={effMode} options={modeOpts} up label="Режим разрешений" onpick={(id) => onchange({ ...settings, mode: id })}>
-          {#snippet children(cur)}<Icon name="shield" size={13} />{cur?.label}{/snippet}
+          {#snippet children(cur)}<Icon name="permissions" size={13} />{cur?.label}{/snippet}
         </Dropdown>
         <Dropdown value={settings.effort} options={effortOpts} up label="Тщательность" onpick={(id) => onchange({ ...settings, effort: id })}>
-          {#snippet children(cur)}{cur?.label}{/snippet}
+          {#snippet children(cur)}<Icon name="effort" size={13} />{cur?.label}{/snippet}
         </Dropdown>
       {/if}
       <span class="grow"></span>
@@ -343,7 +386,7 @@
     {#if hasStrip}
       <div class="strip" role="toolbar" aria-label="Состояние работы">
         {#if git}
-          <button class="pill" class:on={git.active} aria-pressed={git.active} onclick={ongit} title="Изменения в папке проекта">
+          <button class="pill" class:on={git.active} aria-pressed={git.active} onclick={ongit} title={git.title || "Изменения в папке проекта"}>
             <Icon name="branch" size={13} /><span class="gl">{git.label}</span>{#if git.count}<b>{git.count}</b>{/if}
           </button>
         {/if}
@@ -415,6 +458,9 @@
   textarea::placeholder {
     color: var(--fg-3);
   }
+  .stack { display: inline-flex; }
+  .stack > :global(* + *) { margin-left: -5px; box-shadow: 0 0 0 1.5px var(--bg-raised); border-radius: 50%; }
+  .gl2 { max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .bar {
     display: flex;
     align-items: center;
@@ -467,6 +513,8 @@
     left: 34px;
     z-index: 40;
     min-width: 240px;
+    max-height: min(340px, 50vh);
+    overflow-y: auto;
     padding: 4px;
     background: var(--bg-raised);
     border-radius: var(--radius);

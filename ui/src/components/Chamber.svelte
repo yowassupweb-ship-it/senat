@@ -1,131 +1,141 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
+  import { get } from '../lib/api';
   import { app } from '../lib/store.svelte';
   import { roleLabel } from '../lib/format';
   import type { Agent } from '../lib/types';
   import Avatar from './Avatar.svelte';
 
-  // The council before the work starts: every specialist on an equal seat. An arc looked right with four names and
-  // collided with eight, so the layout is one that cannot collide — fixed cells, centred, wrapping. Pick a seat to
-  // address that specialist; pick none and Senate chooses by the subject.
-  let { selected = '', onpick, title }: { selected?: string; onpick: (id: string) => void; title: string; project?: string } = $props();
+  // The Senate chamber: the specialists sit in pods on a ring around a central podium, and the person speaks from the
+  // podium ("I am the Senate"). Pick a pod to address that specialist; pick none and Senate chooses by the subject.
+  // On a narrow window the ring becomes a plain wrapped row.
+  let { selected = [], onpick, title }: { selected?: string[]; onpick: (id: string) => void; title: string; project?: string } = $props();
+
+  let name = $state('');
+  onMount(() => {
+    get('/api/settings')
+      .then((s) => (name = (s.user_name ?? '').trim()))
+      .catch(() => {});
+  });
 
   const agents = $derived(app.agents);
   const working = (a: Agent) => app.live.find((r) => r.agent_id === a.id && r.status === 'running');
   const busyCount = $derived(new Set(app.live.filter((r) => r.status === 'running').map((r) => r.agent_id)).size);
   const hour = new Date().getHours();
   const hello = hour < 5 ? 'Доброй ночи' : hour < 12 ? 'Доброе утро' : hour < 18 ? 'Добрый день' : 'Добрый вечер';
-  const chosen = $derived(agents.find((a) => a.id === selected));
+  const isOn = (id: string) => selected.includes(id);
+  /** How far a specialist is from the next level, 0..1 (a level starts at 6 * (level-1)^2 experience). */
+  const xpFraction = (a: Agent) => {
+    const lv = a.level ?? 1;
+    const from = (lv - 1) ** 2 * 6;
+    const to = a.next_level_xp ?? from + 6;
+    return Math.max(0, Math.min(1, ((a.xp ?? 0) - from) / Math.max(1, to - from)));
+  };
+
+  const CARD_W = 92;
+  const CARD_H = 104;
+  let width = $state(0);
+  // The ring is switched on and off with a margin: its own height can bring a scrollbar, which narrows the page, which
+  // must not flip the layout back and forth (it did: two flickering captions).
+  let wide = $state(false);
+  $effect(() => {
+    if (width >= 720) wide = true;
+    else if (width < 600) wide = false;
+  });
+
+  // One ring of pods on a big circle whose centre lies down behind the composer: the person speaks from there. The
+  // arc is as shallow as the pods allow (a whole pod apart in one direction at every bend); concentric rings go on
+  // down and fade out behind the composer. Too narrow for that: a plain wrapped row.
+  const ring = $derived.by(() => {
+    const n = agents.length;
+    if (!wide || n < 1) return null;
+    const usable = width - CARD_W - 8;
+    for (let deg = n === 1 ? 1 : 36; deg <= 68; deg++) {
+      const half = (deg * Math.PI) / 180;
+      const R = usable / (2 * Math.sin(half));
+      const pts = agents.map((_, i) => {
+        const th = n === 1 ? 0 : -half + (2 * half * i) / (n - 1);
+        return { x: R * Math.sin(th), y: R * (1 - Math.cos(th)) };
+      });
+      const clear = pts.every((p, i) => pts.every((q, j) => j <= i || Math.abs(p.x - q.x) >= CARD_W + 6 || Math.abs(p.y - q.y) >= CARD_H + 6));
+      if (!clear) continue;
+      const drop = R * (1 - Math.cos(half));
+      const tail = 150; // rings continue below the last pod, fading out
+      return { cx: width / 2, R, pts, top: CARD_H / 2 + 4, height: Math.ceil(drop + CARD_H + 10 + tail), tail, rings: [R - 150, R - 270, R - 390].filter((r) => r > 60) };
+    }
+    return null;
+  });
 </script>
 
 <div class="hall">
-  <p class="eyebrow">Зал совета</p>
-  <h1>{hello}</h1>
-  <p class="sub">{title}</p>
+  <h1>{hello}{name ? `, ${name}` : ''}</h1>
+  <p class="sub">Сенат в сборе. {title}</p>
 
-  <div class="seats" role="group" aria-label="Специалисты">
+  <div class="seats" class:ring={!!ring} bind:clientWidth={width} style={ring ? `height:${ring.height}px` : ''} role="group" aria-label="Специалисты">
+    {#if ring}
+      <svg class="tiers" width={width} height={ring.height} aria-hidden="true" style="--tail:{ring.tail}px">
+        {#each ring.rings as r, k}
+          <circle cx={ring.cx} cy={ring.top + ring.R} {r} fill="none" stroke="currentColor" stroke-opacity={0.12} stroke-linecap="round" />
+        {/each}
+      </svg>
+    {/if}
     {#each agents as a, i (a.id)}
       {@const w = working(a)}
       <button
         class="pod"
-        class:on={selected === a.id}
-        style="--i:{i}"
-        aria-pressed={selected === a.id}
-        title={w ? `${a.name}: ${w.hint || 'работает'}` : roleLabel(a) || a.name}
-        onclick={() => onpick(selected === a.id ? '' : a.id)}
+        class:on={isOn(a.id)}
+        style={ring ? `left:${ring.cx + ring.pts[i].x - CARD_W / 2}px;top:${ring.top + ring.pts[i].y - CARD_H / 2}px;width:${CARD_W}px;height:${CARD_H}px;--i:${i}` : `--i:${i}`}
+        aria-pressed={isOn(a.id)}
+        title={w ? `${a.name}: ${w.hint || 'работает'}` : `${a.name}${roleLabel(a) ? ' · ' + roleLabel(a) : ''} · уровень ${a.level ?? 1}`}
+        onclick={() => onpick(a.id)}
       >
-        <Avatar name={a.name} color={a.accent} size={40} />
+        <span class="av"><Avatar name={a.name} color={a.accent} size={52} progress={xpFraction(a)} /><b class="lv" aria-label="Уровень">{a.level ?? 1}</b>{#if w}<i class="dot" aria-label="работает"></i>{/if}</span>
         <span class="nm">{a.name}</span>
-        <span class="st">{w ? 'работает' : roleLabel(a) || 'свободен'}</span>
       </button>
     {/each}
   </div>
-
-  <p class="hint faint">
-    {#if chosen}
-      Обращение к: <b>{chosen.name}</b>. Нажмите ещё раз, чтобы Senate выбирал сам.
-    {:else}
-      Выберите, к кому обратиться, или просто напишите: Senate подберёт специалиста по теме.
-    {/if}
-    {#if busyCount}<span class="live"> Сейчас работают: {busyCount}</span>{/if}
-  </p>
 </div>
 
 <style>
-  .hall {
-    width: min(900px, 100%);
-    margin: 0 auto;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    text-align: center;
-    padding: 2vh 12px 0;
-  }
-  .eyebrow {
-    margin: 0 0 10px;
-    font-size: 10.5px;
-    font-weight: 600;
-    letter-spacing: 0.18em;
-    text-transform: uppercase;
-    color: var(--fg-3);
-  }
-  h1 {
-    margin: 0;
-    font-size: clamp(28px, 3.4vw, 38px);
-    line-height: 1.08;
-    font-weight: 650;
-    letter-spacing: -0.035em;
-  }
-  .sub {
-    margin: 8px 0 0;
-    font-size: 14px;
-    color: var(--fg-2);
-  }
+  .hall { width: min(1600px, 100%); margin: 0 auto; padding: 5vh 16px 0; }
+  h1 { margin: 0; font-size: clamp(26px, 3vw, 34px); line-height: 1.1; font-weight: 650; letter-spacing: -0.03em; text-align: center; }
+  .sub { margin: 6px 0 26px; font-size: 15px; color: var(--fg-2); text-align: center; }
 
-  /* fixed cells: the row wraps, nothing ever lands on a neighbour */
-  .seats {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, 112px);
-    justify-content: center;
-    gap: 6px 4px;
-    margin: 26px 0 20px;
-    width: 100%;
-  }
+  .seats { position: relative; display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; color: var(--fg); }
+  .seats.ring { display: block; }
+  .tiers { position: absolute; left: 0; top: 0; pointer-events: none; -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - var(--tail)), transparent); mask-image: linear-gradient(to bottom, #000 calc(100% - var(--tail)), transparent); }
   .pod {
     display: flex;
     flex-direction: column;
     align-items: center;
+    justify-content: flex-start;
     gap: 7px;
-    padding: 12px 6px 10px;
-    border-radius: var(--radius);
-    animation: seat 0.24s var(--ease-out) both;
+    min-width: 0;
+    width: 92px;
+    padding: 4px 2px;
+    border-radius: 14px;
+    text-align: center;
+    color: var(--fg-2);
+    animation: seat 0.28s var(--ease-out) both;
     animation-delay: calc(var(--i) * 30ms);
-    transition: background 0.12s var(--ease), box-shadow 0.12s var(--ease);
+    transition: color 0.12s var(--ease), transform 0.12s var(--ease);
   }
-  @keyframes seat {
-    from {
-      opacity: 0;
-    }
-    to {
-      opacity: 1;
-    }
-  }
-  .pod:hover {
-    background: var(--bg-hover);
-  }
-  .pod:focus-visible {
-    outline: none;
-    box-shadow: var(--focus-ring);
-  }
-  .pod.on {
-    background: var(--bg-active);
-    box-shadow: inset 0 0 0 1px var(--line-strong);
-  }
+  .ring .pod { position: absolute; }
+  .pod:hover { color: var(--fg); }
+  .pod:hover .av { transform: translateY(-2px); }
+  .pod:focus-visible { outline: none; }
+  .pod:focus-visible .av::after { content: ''; position: absolute; inset: -6px; border-radius: 50%; box-shadow: 0 0 0 1.5px var(--fg-3); pointer-events: none; z-index: 0; }
+  .pod.on { color: var(--fg); }
+  .pod.on .av::after { content: ''; position: absolute; inset: -6px; border-radius: 50%; box-shadow: 0 0 0 2px var(--fg); pointer-events: none; z-index: 0; }
+  .pod.on .nm { text-decoration: underline; text-underline-offset: 3px; text-decoration-thickness: 1.5px; }
+  .av { position: relative; display: grid; isolation: isolate; transition: transform 0.12s var(--ease); }
+  .av :global(.av) { z-index: 1; }
+  .lv { position: absolute; z-index: 3; right: -9px; top: -7px; min-width: 22px; height: 22px; padding: 0 5px; border-radius: 11px; display: grid; place-items: center; font-size: 12px; font-weight: 700; color: #1b1405; background: #e8b64c; box-shadow: 0 0 0 2px var(--bg); }
+  .dot { position: absolute; z-index: 3; right: -1px; bottom: -1px; width: 9px; height: 9px; border-radius: 50%; background: var(--warn, #d29922); box-shadow: 0 0 0 2px var(--bg); }
   .nm {
-    font-size: 12.5px;
+    font-size: 11.5px;
     font-weight: 600;
-    line-height: 1.25;
-    /* two lines of room whatever the name: the status below keeps one baseline across the row */
-    min-height: calc(2 * 1.25em);
+    line-height: 1.2;
     max-width: 100%;
     display: -webkit-box;
     -webkit-line-clamp: 2;
@@ -134,40 +144,6 @@
     overflow: hidden;
     text-wrap: balance;
   }
-  .st {
-    font-size: 11px;
-    color: var(--fg-3);
-    max-width: 100%;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .pod.on .st {
-    color: var(--fg-2);
-  }
-
-  .hint {
-    margin: 0;
-    font-size: 13px;
-    max-width: 560px;
-    line-height: 1.5;
-  }
-  .hint b {
-    color: var(--fg);
-  }
-  .live {
-    color: var(--fg-2);
-  }
-
-  @media (max-width: 520px) {
-    .seats {
-      grid-template-columns: repeat(auto-fit, 96px);
-      margin: 18px 0 16px;
-    }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .pod {
-      animation: none;
-    }
-  }
+  @keyframes seat { from { opacity: 0; } to { opacity: 1; } }
+  @media (prefers-reduced-motion: reduce) { .pod { animation: none; } }
 </style>

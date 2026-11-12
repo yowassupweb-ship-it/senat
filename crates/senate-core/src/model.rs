@@ -122,6 +122,9 @@ pub struct Agent {
     /// Address of the uploaded picture ("" = none: the first letter on the accent colour is shown).
     #[serde(default)]
     pub avatar: String,
+    /// "m", "f" or "" (not set).
+    #[serde(default)]
+    pub gender: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

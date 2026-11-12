@@ -18,12 +18,13 @@
   const errors = $derived(tools.filter((s) => s.is_error && s.status !== 'denied').length);
 
   function icon(name = ''): string {
-    if (/Read|Glob|Grep|LS/.test(name)) return 'search';
+    if (/^(Bash|PowerShell)$/.test(name)) return 'bash';
+    if (/WebSearch/.test(name)) return 'web-search';
+    if (/WebFetch|browser|chrome|playwright|puppeteer/i.test(name)) return 'browser';
+    if (/^(Read|Glob|Grep|LS)$|senate_(recall|find)$/.test(name)) return 'read';
     if (/Edit|Write|Notebook/.test(name)) return 'pencil';
-    if (/Bash|PowerShell/.test(name)) return 'terminal';
-    if (/Web/.test(name)) return 'globe';
-    if (name.startsWith('senate_')) return 'brain';
-    return 'sparkle';
+    if (/memory|remember|learn|record/i.test(name)) return 'memory-write';
+    return 'tool';
   }
   const isEdit = (s: Step) => /^(Edit|MultiEdit)$/.test(s.name ?? '');
   const isWrite = (s: Step) => s.name === 'Write';

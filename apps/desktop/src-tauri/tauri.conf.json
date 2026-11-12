@@ -3,7 +3,7 @@
   "productName": "Senate",
   "version": "0.1.0",
   "identifier": "app.senate.desktop",
-  "build": { "frontendDist": "../dist" },
+  "build": { "frontendDist": "../../../ui/dist" },
   "app": {
     "windows": [],
     "security": { "csp": null }

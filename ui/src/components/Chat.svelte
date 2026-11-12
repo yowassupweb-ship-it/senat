@@ -2,7 +2,7 @@
   import { tick, untrack } from 'svelte';
   import { fileUrl, get, patch, post } from '../lib/api';
   import ForumDialog from './ForumDialog.svelte';
-  import { agentById, app, go, loadGit, loadMessages, projectById, refreshThreads, threadById, upsertMessage } from '../lib/store.svelte';
+  import { agentById, app, go, loadGit, loadMessages, loadThreadGit, projectById, refreshThreads, threadById, upsertMessage } from '../lib/store.svelte';
   import type { Message } from '../lib/types';
   import { MODE_LABEL } from '../lib/format';
   import Avatar from './Avatar.svelte';
@@ -35,6 +35,14 @@
 
   // Settings of a chat that does not exist yet live here; for existing chats they come from the thread.
   let draftSettings = $state<Settings>({ agent: '', mode: '', effort: '' });
+  // Several specialists can be picked before the chat starts: they are all addressed with @mentions.
+  // The same choice works in an open chat: the specialist menu in the composer ticks several, and each message
+  // then goes to all of them. One ticked is simply that chat's specialist; none ticked leaves the choice to Senate.
+  let picked = $state<string[]>(untrack(() => (thread?.agent_id ? [thread.agent_id] : [])));
+  function togglePick(id: string) {
+    picked = !id ? [] : picked.includes(id) ? picked.filter((x) => x !== id) : [...picked, id];
+    changeSettings({ ...settings, agent: picked.length === 1 ? picked[0] : '' });
+  }
   const settings = $derived<Settings>(thread ? { agent: thread.agent_id ?? '', mode: thread.mode, effort: thread.effort } : draftSettings);
 
   async function changeSettings(s: Settings) {
@@ -110,6 +118,10 @@
     error = '';
     try {
       let id = threadId;
+      if (picked.length > 1) {
+        const tags = picked.map((p) => app.agents.find((a) => a.id === p)?.slug).filter((s): s is string => !!s && !text.includes('@' + s));
+        if (tags.length) text = tags.map((s) => '@' + s).join(' ') + ' ' + text;
+      }
       if (!id) {
         const t = await post('/api/threads', { project_id: projectId ?? null, agent_id: draftSettings.agent || null });
         id = t.id as string;
@@ -202,12 +214,37 @@
     go({ kind: 'new', project: thread.project_id ?? undefined });
   }
 
-  const git = $derived(project ? app.git[project.id] : undefined);
+  const git = $derived(threadId ? app.git['t:' + threadId] : undefined);
   const changeCount = $derived(git?.available ? (git.changes?.length ?? 0) : 0);
 
   // The specialist's current plan: the latest TodoWrite of the latest run that made one. Shown while it
   // is being worked on; once everything is done and nobody is working, it goes away.
-  const gitChip = $derived(project?.root_path ? { label: git?.available ? (git.branch ?? 'git') : 'нет git', count: changeCount, active: app.panel } : undefined);
+  // The git bar follows the folder the chat works in, project or not. It shows once a repository is there and stays
+  // (a failed refresh keeps the last state), so it does not come and go between turns.
+  const gitChip = $derived(
+    git?.available
+      ? {
+          label: `${git.branch ?? 'git'}${git.ahead ? ` ↑${git.ahead}` : ''}`,
+          count: changeCount,
+          active: app.panel,
+          title: [git.last_commit ? `Последний коммит: ${git.last_commit}` : '', git.ahead ? `Не отправлено в удалённый репозиторий: ${git.ahead}` : git.behind === 0 && git.ahead === 0 ? 'Всё отправлено' : '', changeCount ? `Неотправленных изменений в файлах: ${changeCount}` : ''].filter(Boolean).join(' · '),
+        }
+      : undefined,
+  );
+
+  // Keep it fresh: when the chat opens, when the window comes back, and every so often while a specialist works.
+  $effect(() => {
+    const id = threadId;
+    if (!id) return;
+    untrack(() => loadThreadGit(id));
+    const tick = setInterval(() => { if (document.visibilityState === 'visible') loadThreadGit(id); }, 15000);
+    const focus = () => loadThreadGit(id);
+    window.addEventListener('focus', focus);
+    return () => {
+      clearInterval(tick);
+      window.removeEventListener('focus', focus);
+    };
+  });
 
   let planSig = '';
   let planKept: Todo[] = [];
@@ -270,7 +307,7 @@
 
     {#if !threadId}
       <div class="empty">
-        <Chamber title={greeting} selected={draftSettings.agent} onpick={(id) => (draftSettings = { ...draftSettings, agent: id })} />
+        <Chamber title={greeting} selected={picked} onpick={togglePick} />
       </div>
     {:else}
       <div class="scroll" bind:this={scroller} onscroll={onScroll}>
@@ -298,6 +335,8 @@
 
     <Composer
       {settings}
+      {picked}
+      ontoggleagent={togglePick}
       onchange={changeSettings}
       onsend={send}
       onstop={() => stop()}
@@ -326,7 +365,7 @@
 
   {#if forumDialog}<ForumDialog onclose={() => (forumDialog = false)} topic={[...messages].reverse().find((m) => m.author_kind === 'user')?.body ?? ''} project={project?.id ?? ''} fromThread={threadId ?? ''} />{/if}
   {#if app.panel && project?.root_path}
-    <ChangesPanel projectId={project.id} />
+    <ChangesPanel threadId={threadId} />
   {/if}
 </div>
 
@@ -428,6 +467,7 @@
     justify-content: space-between;
   }
   .empty {
+    scrollbar-gutter: stable;
     flex: 1;
     display: flex;
     flex-direction: column;

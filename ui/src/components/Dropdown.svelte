@@ -12,6 +12,8 @@
     up = false,
     align = 'left',
     block = false,
+    selected,
+    ontoggle,
     children,
   }: {
     value: string;
@@ -21,6 +23,9 @@
     up?: boolean;
     align?: 'left' | 'right';
     block?: boolean;
+    /** Several choices at once: these ids are ticked, a click toggles one and the menu stays open. */
+    selected?: string[];
+    ontoggle?: (id: string) => void;
     children?: Snippet<[Opt | undefined]>;
   } = $props();
 
@@ -51,6 +56,8 @@
     const next = e.key === 'Home' ? 0 : e.key === 'End' ? choices.length - 1 : (i + (e.key === 'ArrowDown' ? 1 : -1) + choices.length) % choices.length;
     choices[next]?.focus();
   }
+  const multi = $derived(selected !== undefined);
+  const isOn = (id: string) => (multi ? (id === '' ? selected!.length === 0 : selected!.includes(id)) : id === value);
   const current = $derived(options.find((o) => o.id === value));
 
   function onDoc(e: MouseEvent) {
@@ -73,21 +80,25 @@
     <Icon name="down" size={12} />
   </button>
   {#if open}
-    <div bind:this={menu} class="menu" class:up class:right={align === 'right'} class:block role="listbox" aria-label={label} style={position}>
+    <div bind:this={menu} class="menu" class:up class:right={align === 'right'} class:block role="listbox" aria-multiselectable={multi || undefined} aria-label={label} style={position}>
       {#each options as o, i (o.id + i)}
         {#if o.group && o.group !== options[i - 1]?.group}<div class="grp">{o.group}</div>{/if}
         <button
           class="opt"
           role="option"
-          aria-selected={o.id === value}
+          aria-selected={isOn(o.id)}
           disabled={o.disabled}
           onclick={() => {
+            if (multi) {
+              ontoggle?.(o.id);
+              return;
+            }
             open = false;
             onpick(o.id);
             trigger.focus();
           }}
         >
-          <span class="tick">{#if o.id === value}<Icon name="check" size={13} />{/if}</span>
+          <span class="tick" class:box={multi}>{#if isOn(o.id)}<Icon name="check" size={13} />{/if}</span>
           {#if o.brand}<span class="mk"><BrandMark id={o.brand} size={14} tint /></span>{/if}
           <span class="txt"><b>{o.label}</b>{#if o.hint}<small>{o.hint}</small>{/if}</span>
         </button>
@@ -193,6 +204,20 @@
     color: var(--accent);
     padding-top: 2px;
     flex: none;
+  }
+  .tick.box {
+    width: 15px;
+    height: 15px;
+    margin-top: 2px;
+    padding: 0;
+    display: grid;
+    place-items: center;
+    border-radius: 4px;
+    box-shadow: inset 0 0 0 1.5px var(--line-strong);
+  }
+  .opt[aria-selected='true'] .tick.box {
+    background: var(--accent-soft, var(--bg-active));
+    box-shadow: inset 0 0 0 1.5px var(--accent);
   }
   .mk {
     padding-top: 2px;
