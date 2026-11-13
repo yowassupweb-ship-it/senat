@@ -599,5 +599,10 @@ mod tests {
         assert!(crate::resume_died_at_once(&died));
         let worked = crate::Outcome { failure: Some("error_during_execution".into()), text: "часть ответа".into(), ..Default::default() };
         assert!(!crate::resume_died_at_once(&worked));
+        // other CLIs' wordings count too; spent limits and lost logins do not
+        let codex = crate::Outcome { failure: Some("thread/resume failed: no rollout found for thread id 01a1cfc4 (code -32600)".into()), ..Default::default() };
+        assert!(crate::resume_died_at_once(&codex) && crate::session_is_lost(&codex));
+        let limit = crate::Outcome { failure: Some("You've hit your session limit · resets 11:20pm".into()), ..Default::default() };
+        assert!(!crate::resume_died_at_once(&limit));
     }
 }

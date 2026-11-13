@@ -217,6 +217,8 @@ pub(crate) async fn execute(app: Arc<App>, s: Session) {
     // on the computer connected last, and everyone else on the node.
     let project_machine = project.as_ref().filter(|p| !p.root_path.is_empty()).and_then(|p| p.node_id.clone()).filter(|m| !m.is_empty() && *m != app.machine_id);
     let local = project_machine.is_some() || store.setting(&format!("exec:{}", agent.id)).ok().flatten().as_deref() == Some("local");
+    // The computer the turn goes to is fixed now, so the session continued is that computer's own.
+    let project_machine = if local && project_machine.is_none() { app.runner.latest_machine() } else { project_machine };
     // CLI sessions live on the computer that ran them: a session from one computer means nothing on another.
     let session_key = match (&project_machine, local) {
         (Some(m), _) => format!("{provider}@{m}"),

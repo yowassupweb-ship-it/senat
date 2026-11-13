@@ -219,15 +219,21 @@ pub fn session_is_lost(o: &Outcome) -> bool {
             || l.contains("unknown sessionid")
             || l.contains("unknown session")
             || l.contains("session not found")
+            || l.contains("no rollout found")
             || (l.contains("session") && (l.contains("not found") || l.contains("no such") || l.contains("does not exist"))))
 }
 
-/// A continued session that failed before doing anything — no text, not one turn, nothing stopped it. Claude Code
-/// answers a session it cannot load with a bare `error_during_execution`, not with "not found": a fresh session is
-/// the cure for that too, and costs nothing when the failure was something else (it will fail the same way).
+/// A continued session that failed before doing anything — no text, not one turn, nothing stopped it. Each CLI
+/// says "I cannot load that session" its own way (Claude: a bare `error_during_execution`; Codex: "no rollout found
+/// for thread id"; Kimi: "Internal error"), and new wordings keep coming. Whatever the words, a session that cannot
+/// even start is retried fresh. Spent limits and a lost login are not: a new session would fail the same way.
 pub fn resume_died_at_once(o: &Outcome) -> bool {
     let Some(f) = o.failure.as_deref() else { return false };
-    o.text.is_empty() && !o.stopped && o.work.turns == 0 && o.work.output_tokens == 0 && f.contains("error_during_execution")
+    let l = f.to_lowercase();
+    let not_session = ["limit", "quota", "429", "login", "log in", "logged", "auth", "401", "403", "credit", "billing", "не найден на этой машине", "рабочая папка недоступна"]
+        .iter()
+        .any(|k| l.contains(k));
+    o.text.is_empty() && !o.stopped && o.work.turns == 0 && o.work.output_tokens == 0 && !not_session
 }
 
 /// Run one turn. A resume that hits a held session is retried once after a short wait (an orphan exits when its
