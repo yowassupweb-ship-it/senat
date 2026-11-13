@@ -123,6 +123,9 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/runner/workspaces/file", get(ws_get).put(ws_put).layer(DefaultBodyLimit::max(25 << 20)))
         .route("/api/machines", get(machines))
         .route("/api/projects/:id/tree", get(project_tree))
+        .route("/api/threads/:id/tree", get(thread_tree))
+        .route("/api/threads/:id/file", get(thread_file))
+        .route("/api/threads/:id/open", post(thread_open))
         .route("/api/projects/:id/file", get(project_file))
         .route("/api/projects/:id/open", post(project_open))
         .route("/api/cloud", get(cloud_list).delete(cloud_delete))
@@ -757,6 +760,42 @@ fn thread_place(a: &App, id: &str) -> Option<(String, String)> {
         return Some((p.root_path, p.node_id.unwrap_or_default()));
     }
     thread_root(a, id).map(|r| (r.to_string_lossy().into_owned(), String::new()))
+}
+
+/// What the file panel of a chat shows: the project's folder; or, for a chat without one, the specialists' private
+/// folders where its specialist works — on the computer (a specialist set to work locally) or on the node.
+fn thread_files(a: &App, id: &str) -> Result<(String, String, String), ApiError> {
+    let t = a.store.get_thread(id)?;
+    if let Some(p) = t.project_id.as_ref().and_then(|pid| a.store.get_project(pid).ok()).filter(|p| !p.root_path.is_empty()) {
+        return Ok((p.root_path.clone(), p.node_id.unwrap_or_default(), p.root_path));
+    }
+    let agent = t.agent_id.clone().or_else(|| a.store.list_messages(id, None, 30).ok()?.iter().rev().find(|m| m.author_kind == "agent").and_then(|m| m.author_id.clone()));
+    let local = agent.as_deref().map(|ag| a.store.setting(&format!("exec:{ag}")).ok().flatten().as_deref() == Some("local")).unwrap_or(false);
+    if local {
+        if let Some(m) = a.runner.latest_machine() {
+            return Ok(("@ws/".into(), m, "Личные папки специалистов".into()));
+        }
+    }
+    let root = a.cfg.data_dir.join("workspaces");
+    Ok((root.to_string_lossy().into_owned(), String::new(), "Личные папки специалистов".into()))
+}
+
+async fn thread_tree(State(a): S, Path(id): Path<String>, Query(q): Query<HashMap<String, String>>) -> R {
+    let (root, machine, label) = thread_files(&a, &id)?;
+    let mut v = on_machine(&a, &machine, "tree", json!({"root": root, "path": q.get("path").cloned().unwrap_or_default()})).await?;
+    let mname = if machine.is_empty() { String::new() } else { a.store.list_nodes()?.into_iter().find(|n| n.id == machine).map(|n| n.name).unwrap_or_default() };
+    v["place"] = json!({"label": label, "machine": machine, "machine_name": mname});
+    ok(v)
+}
+
+async fn thread_file(State(a): S, Path(id): Path<String>, Query(q): Query<HashMap<String, String>>) -> R {
+    let (root, machine, _) = thread_files(&a, &id)?;
+    ok(on_machine(&a, &machine, "read", json!({"root": root, "path": q.get("path").cloned().unwrap_or_default()})).await?)
+}
+
+async fn thread_open(State(a): S, Path(id): Path<String>, Json(b): Json<Value>) -> R {
+    let (root, machine, _) = thread_files(&a, &id)?;
+    ok(on_machine(&a, &machine, "open", json!({"root": root, "path": b["path"].as_str().unwrap_or("")})).await?)
 }
 
 fn safe_rel(p: &str) -> Result<(), ApiError> {

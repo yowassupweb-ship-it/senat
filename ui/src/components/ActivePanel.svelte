@@ -45,7 +45,8 @@
   });
   // The folder of the chat on screen: the strip offers it, so the files are one click away from anywhere in the chat.
   const viewThread = $derived(app.view.kind === 'chat' ? app.threads.find((t) => t.id === (app.view as any).id) : undefined);
-  const viewFolder = $derived(!!viewThread && (!!app.projects.find((p) => p.id === viewThread.project_id)?.root_path || !!app.git['t:' + viewThread.id]?.available));
+  // every chat has files to show: its project's folder, or the specialists' private folders it works in
+  const viewFolder = $derived(!!viewThread);
   const busy = $derived(runs.some((r) => r.status === 'running' || r.status === 'queued' || r.awaiting));
   // someone waiting for the person's answer opens the panel even when it was folded: the answer is right there
   const waiting = $derived(runs.some((r) => r.ask || r.question));

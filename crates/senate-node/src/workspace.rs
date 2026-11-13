@@ -47,22 +47,41 @@ fn arg<'a>(args: &'a Value, k: &str) -> &'a str {
     args[k].as_str().unwrap_or("")
 }
 
+/// Where this app keeps specialists' private folders (`<app data>/runner/workspaces`); set by the runner.
+pub(crate) static WS_ROOT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// A root as the node names it: a real path, or `@ws/<slug>` — a specialist's private folder on this computer.
+fn root_of(args: &Value) -> PathBuf {
+    let r = arg(args, "root");
+    match r.strip_prefix("@ws/") {
+        Some(rest) if !rest.contains("..") => WS_ROOT.get().map(|w| w.join(rest)).unwrap_or_else(|| PathBuf::from(r)),
+        _ => PathBuf::from(r),
+    }
+}
+
 /// Carry out one operation on this computer.
 pub(crate) fn op(name: &str, args: &Value) -> Result<Value, String> {
     match name {
         "dirs" => Ok(dirs(arg(args, "path"))),
         "is_dir" => Ok(json!({"is_dir": Path::new(arg(args, "path")).is_dir()})),
-        "tree" => tree(Path::new(arg(args, "root")), arg(args, "path")),
-        "read" => read(Path::new(arg(args, "root")), arg(args, "path")),
-        "git_status" => Ok(crate::project_git::status(Path::new(arg(args, "root")))),
+        "tree" => {
+            let root = root_of(args);
+            // a private folder that was never used yet is simply empty, not an error
+            if arg(args, "root").starts_with("@ws/") {
+                let _ = std::fs::create_dir_all(&root);
+            }
+            tree(&root, arg(args, "path"))
+        }
+        "read" => read(&root_of(args), arg(args, "path")),
+        "git_status" => Ok(crate::project_git::status(&root_of(args))),
         "git_diff" => {
             let p = arg(args, "path");
             if !p.is_empty() {
-                inside(Path::new(arg(args, "root")), p)?;
+                inside(&root_of(args), p)?;
             }
-            Ok(json!({"diff": crate::project_git::diff(Path::new(arg(args, "root")), (!p.is_empty()).then_some(p))}))
+            Ok(json!({"diff": crate::project_git::diff(&root_of(args), (!p.is_empty()).then_some(p))}))
         }
-        "open" => open_in_editor(Path::new(arg(args, "root")), arg(args, "path")),
+        "open" => open_in_editor(&root_of(args), arg(args, "path")),
         "env" => Ok(environment()),
         other => Err(format!("неизвестная операция {other}")),
     }

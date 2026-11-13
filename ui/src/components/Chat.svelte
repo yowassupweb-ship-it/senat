@@ -321,7 +321,7 @@
       {:else if thread && thread.kind === 'chat'}
         <button class="icon-btn" onclick={() => (forumDialog = true)} aria-label="Вынести на форум" title="Вынести на форум"><Icon name="forum" size={15} /></button>
       {/if}
-      {#if thread && (project?.root_path || git?.available)}
+      {#if thread}
         <button class="icon-btn" onclick={() => (app.panel = !app.panel)} aria-pressed={app.panel} aria-label="Панель проекта: файлы и изменения" title="Файлы и изменения"><Icon name="panel" size={15} /></button>
       {/if}
       {#if thread}
@@ -389,7 +389,7 @@
   {/if}
 
   {#if forumDialog}<ForumDialog onclose={() => (forumDialog = false)} topic={[...messages].reverse().find((m) => m.author_kind === 'user')?.body ?? ''} project={project?.id ?? ''} fromThread={threadId ?? ''} />{/if}
-  {#if app.panel && threadId && (project?.root_path || git?.available)}
+  {#if app.panel && threadId}
     <ProjectPanel {threadId} projectId={project?.id ?? ''} />
   {/if}
 </div>

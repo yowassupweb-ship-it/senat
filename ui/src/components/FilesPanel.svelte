@@ -7,7 +7,9 @@
   import type { TreeEntry } from '../lib/types';
   import Icon from './Icon.svelte';
 
-  let { projectId, threadId = '' }: { projectId: string; threadId?: string } = $props();
+  // `base`: whose folder — `/api/projects/<id>` (a project's folder) or `/api/threads/<id>` (what a chat works in).
+  // `onplace`: where the tree says it is (for the panel's header), when it is not a project folder.
+  let { base, threadId = '', onplace }: { base: string; threadId?: string; onplace?: (p: { label: string; machine: string; machine_name: string }) => void } = $props();
 
   let children = $state<Record<string, TreeEntry[]>>({});
   let open = $state<Record<string, boolean>>({});
@@ -23,8 +25,9 @@
   async function list(path: string) {
     loading[path] = true;
     try {
-      const r = await get(`/api/projects/${projectId}/tree?path=${encodeURIComponent(path)}`);
+      const r = await get(`${base}/tree?path=${encodeURIComponent(path)}`);
       children[path] = r.entries;
+      if (!path && r.place) onplace?.(r.place);
       if (!path) error = '';
     } catch (e: any) {
       if (!path) error = e.message;
@@ -42,7 +45,7 @@
   }
 
   $effect(() => {
-    projectId;
+    base;
     reset();
   });
 
@@ -63,7 +66,7 @@
     fileLoading = true;
     fileError = '';
     try {
-      file = await get(`/api/projects/${projectId}/file?path=${encodeURIComponent(path)}`);
+      file = await get(`${base}/file?path=${encodeURIComponent(path)}`);
     } catch (e: any) {
       file = null;
       fileError = e.message;
@@ -82,7 +85,7 @@
 
   async function openInEditor(path = '') {
     try {
-      await post(`/api/projects/${projectId}/open`, { path });
+      await post(`${base}/open`, { path });
       flash('Открывается в VS Code');
     } catch (e: any) {
       flash(e.message);

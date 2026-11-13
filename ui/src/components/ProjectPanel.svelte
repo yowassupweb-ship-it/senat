@@ -10,7 +10,15 @@
   const project = $derived(projectById(projectId));
   const hasFolder = $derived(!!project?.root_path);
   const machine = $derived(machineOf(project));
-  const tab = $derived(hasFolder ? app.panelTab : 'changes');
+  // Files are always there: the project's folder, or — for a chat without one — the specialists' private folders
+  // where its specialist works (on the computer or on the node).
+  const tab = $derived(app.panelTab);
+  const filesBase = $derived(hasFolder && project ? `/api/projects/${project.id}` : `/api/threads/${threadId}`);
+  let place = $state<{ label: string; machine: string; machine_name: string } | null>(null);
+  $effect(() => {
+    threadId;
+    place = null;
+  });
   const changes = $derived(app.git['t:' + threadId]?.changes?.length ?? 0);
   let files = $state<FilesPanel>();
 
@@ -30,14 +38,10 @@
 
 <aside class="panel" aria-label="Проект">
   <header>
-    {#if hasFolder}
-      <div class="tabs" role="tablist" aria-label="Что показать">
-        <button role="tab" aria-selected={tab === 'files'} class:on={tab === 'files'} onclick={() => pick('files')}>Файлы</button>
-        <button role="tab" aria-selected={tab === 'changes'} class:on={tab === 'changes'} onclick={() => pick('changes')}>Изменения{#if changes}<span class="n">{changes}</span>{/if}</button>
-      </div>
-    {:else}
-      <b>Изменения</b>
-    {/if}
+    <div class="tabs" role="tablist" aria-label="Что показать">
+      <button role="tab" aria-selected={tab === 'files'} class:on={tab === 'files'} onclick={() => pick('files')}>Файлы</button>
+      <button role="tab" aria-selected={tab === 'changes'} class:on={tab === 'changes'} onclick={() => pick('changes')}>Изменения{#if changes}<span class="n">{changes}</span>{/if}</button>
+    </div>
     <span class="grow"></span>
     <button class="icon-btn" onclick={refresh} aria-label="Обновить" title="Обновить"><Icon name="refresh" size={14} /></button>
     <button class="icon-btn" onclick={() => (app.panel = false)} aria-label="Закрыть панель" title="Закрыть панель"><Icon name="x" size={14} /></button>
@@ -50,9 +54,16 @@
       {#if machine && !machine.online}<span class="off">не в сети</span>{/if}
       <span class="root">{project?.root_path}</span>
     </div>
+  {:else if place}
+    <div class="where">
+      <span class="dot on" aria-hidden="true"></span>
+      <Icon name={place.machine ? 'monitor' : 'server'} size={12} />
+      <span class="mname">{place.machine_name || 'Сервер'}</span>
+      <span class="root">{place.label}</span>
+    </div>
   {/if}
-  {#if tab === 'files' && project}
-    <FilesPanel bind:this={files} projectId={project.id} {threadId} />
+  {#if tab === 'files'}
+    <FilesPanel bind:this={files} base={filesBase} {threadId} onplace={(p) => (place = p)} />
   {:else}
     <ChangesPanel {threadId} bare />
   {/if}

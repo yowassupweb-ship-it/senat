@@ -410,6 +410,7 @@ pub async fn run_client(hub: String, token: String, data_dir: PathBuf, mut stop:
     let hub = hub.trim_end_matches('/').to_string();
     let http = reqwest::Client::builder().timeout(Duration::from_secs(45)).build().unwrap();
     let (machine_id, machine_name) = crate::workspace::machine_identity(&data_dir);
+    let _ = crate::workspace::WS_ROOT.set(data_dir.join("runner").join("workspaces"));
     // the tools are looked up once, off the polling path
     let env = tokio::task::spawn_blocking(crate::workspace::environment).await.unwrap_or(Value::Null);
     let me = json!({"id": machine_id, "name": machine_name, "os": std::env::consts::OS, "env": env});
