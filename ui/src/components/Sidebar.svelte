@@ -167,7 +167,7 @@
         <div class="gh">
           <button class="gtoggle" aria-expanded={!isFolded(g.id)} onclick={() => fold(g.id)} title={g.name}>
             <span class="chev" class:shut={isFolded(g.id)}><Icon name="down" size={11} /></span>
-            <Icon name="building" size={13} /><span class="gt">{g.name}</span><span class="cnt faint">{g.items.length}</span>
+            <span class="gt">{g.name}</span><span class="cnt faint">{g.items.length}</span>
           </button>
         </div>
         {#if !isFolded(g.id)}{#each g.items as t (t.id)}{@render item(t, false)}{/each}{/if}
@@ -176,7 +176,7 @@
 
     {#if looseChats.length}
       <div class="group">
-        <div class="gh"><span class="gtoggle static"><Icon name="chat" size={13} /><span class="gt">{byCompany.groups.length ? 'Без компании' : 'Чаты'}</span></span></div>
+        <div class="gh"><span class="gtoggle static"><span class="chev" aria-hidden="true"></span><span class="gt">{byCompany.groups.length ? 'Без компании' : 'Чаты'}</span></span></div>
         {#each looseChats as t (t.id)}{@render item(t, false)}{/each}
       </div>
     {/if}
