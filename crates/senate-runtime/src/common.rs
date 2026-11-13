@@ -255,12 +255,17 @@ pub(crate) fn spawn(mut cmd: Command) -> std::io::Result<Proc> {
 
 /// Feed lines to `on_line` until the process ends, the run is cancelled or the limit passes.
 /// Returns true if cancelled.
-pub(crate) async fn pump(p: &mut Proc, cancel: &mut CancelRx, limit: std::time::Duration, mut on_line: impl FnMut(&str)) -> Result<bool, String> {
+/// `on_line` returns true when the turn is over by the CLI's own word (its "turn completed"): reading stops there.
+/// A CLI may keep running after it — Codex waits for a dev server its shell started — and the turn must not.
+pub(crate) async fn pump(p: &mut Proc, cancel: &mut CancelRx, limit: std::time::Duration, mut on_line: impl FnMut(&str) -> bool) -> Result<bool, String> {
     let deadline = tokio::time::sleep(limit);
     tokio::pin!(deadline);
     loop {
         tokio::select! {
-            l = p.lines.recv() => match l { Some(l) => on_line(&l), None => return Ok(false) },
+            l = p.lines.recv() => match l {
+                Some(l) => if on_line(&l) { return Ok(false) },
+                None => return Ok(false),
+            },
             _ = cancel.changed() => { if *cancel.borrow() { return Ok(true) } },
             _ = &mut deadline => return Err("Агент работал дольше двух часов — остановлен".into()),
             // The CLI ended, but something it started (a dev server) may still hold its output open: read what is
@@ -270,7 +275,7 @@ pub(crate) async fn pump(p: &mut Proc, cancel: &mut CancelRx, limit: std::time::
                 tokio::pin!(quiet);
                 loop {
                     tokio::select! {
-                        l = p.lines.recv() => match l { Some(l) => on_line(&l), None => return Ok(false) },
+                        l = p.lines.recv() => match l { Some(l) => if on_line(&l) { return Ok(false) }, None => return Ok(false) },
                         _ = &mut quiet => return Ok(false),
                     }
                 }

@@ -130,7 +130,13 @@ pub async fn run(spec: RunSpec, _approver: &dyn Approver, tx: EventTx, mut cance
     let mut t = Tracker::new(tx, spec.model().unwrap_or(""));
     t.phase("запускается");
     let started = std::time::Instant::now();
-    let stopped = match pump(&mut proc, &mut cancel, RUN_LIMIT, |line| handle(line.trim(), &mut t)).await {
+    // the turn is over at "turn.completed" / "turn.failed": Codex itself may linger while a server it started runs
+    let stopped = match pump(&mut proc, &mut cancel, RUN_LIMIT, |line| {
+        handle(line.trim(), &mut t);
+        t.done || line.contains("\"turn.failed\"")
+    })
+    .await
+    {
         Ok(s) => s,
         Err(e) => {
             t.failure = Some(e);

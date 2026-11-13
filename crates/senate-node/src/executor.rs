@@ -383,7 +383,14 @@ pub(crate) async fn execute(app: Arc<App>, s: Session) {
     if let Some(f) = &outcome.failure {
         props["error"] = json!(f);
     }
-    if let Ok(m) = store.update_message(&msg_id, Some(&outcome.text), Some(&props), Some(status)) {
+    // A turn stopped (or cut off) before its end reports nothing new: what was already written and done stays.
+    if outcome.steps.is_empty() {
+        if let Some(o) = props.as_object_mut() {
+            o.remove("steps");
+        }
+    }
+    let body = if outcome.text.trim().is_empty() { None } else { Some(outcome.text.as_str()) };
+    if let Ok(m) = store.update_message(&msg_id, body, Some(&props), Some(status)) {
         app.publish("message", serde_json::to_value(&m).unwrap_or_default());
     }
     // A colleague who was called has answered (or could not): the answer goes back to whoever called them.
