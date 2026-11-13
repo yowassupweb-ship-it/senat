@@ -1,6 +1,7 @@
 //! The rules of the environment: obligation lifecycle, authorization, wake-ups and scheduling.
 //! None of this depends on a model — "the agent exists permanently, its compute context does not".
 
+use rusqlite::OptionalExtension as _;
 use crate::error::{Error, Result};
 use crate::model::*;
 use crate::store::Store;
@@ -556,6 +557,19 @@ impl Store {
                 "НЕ ДОСТАВЛЕНО: цепочка вызовов уже длинная ({MAX_DEPTH}), {} этот запрос не получил и нового хода не будет. Важное предупреждение отправь записку senate_message_colleague — она доставляется всегда; иначе доведи работу сам или спроси человека. Не говори, что передал.",
                 target.name
             )));
+        }
+        // the same request to the same colleague, still waiting or in work: one turn, not a pile of identical ones
+        let pending: Option<(String, Option<String>)> = self
+            .lock()
+            .query_row(
+                "SELECT id, session_id FROM messages WHERE thread_id=? AND author_id=? AND status IN ('queued','working')
+                 AND json_extract(props,'$.asked_by')=? AND json_extract(props,'$.request')=? ORDER BY created_at DESC LIMIT 1",
+                rusqlite::params![thread.id, target.id, caller.id, request.trim()],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        if let Some((mid, sid)) = pending {
+            return Ok(serde_json::json!({"status": "already_queued", "to": target.slug, "message_id": mid, "session_id": sid, "note": "этот запрос коллеге уже в работе — новый не отправлен; ответ придёт как обычно"}));
         }
         let call_msg = self.post_message(&thread.id, "agent", Some(&caller.id), &format!("→ @{}: {}", target.slug, request.trim()), serde_json::json!({"call": {"to": target.id}}), MessageStatus::Done, None)?;
         let backend = if !target.model_pref.is_empty() { target.model_pref.clone() } else { default_backend.to_string() };

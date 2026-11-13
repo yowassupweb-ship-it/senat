@@ -798,7 +798,11 @@ impl Store {
             "obligation",
             id,
             actor,
-            serde_json::json!({"from": prev, "to": state.as_str(), "note": note}),
+            {
+                // a blocked task always says why in the history, even when the caller left the note empty
+                let note = if note.trim().is_empty() && !blocker.trim().is_empty() { blocker } else { note };
+                serde_json::json!({"from": prev, "to": state.as_str(), "note": note, "blocker": blocker})
+            },
         )?;
         Ok(c.query_row(&format!("SELECT {OBL_COLS} FROM obligations WHERE id=?"), [id], obligation_from)?)
     }

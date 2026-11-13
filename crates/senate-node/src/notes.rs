@@ -18,7 +18,9 @@ use std::time::{Duration, Instant};
 /// Notes in a turn's prompt.
 pub(crate) fn block(notes: &[Value]) -> String {
     let mut s = String::from("<senate-notes>\nЗаписки от коллег, пока тебя не было. Учти их в этой работе; срочные — прежде всего.\n");
-    for n in notes {
+    // the same note sent again (a retry, a second attempt) is said once
+    let mut seen = std::collections::HashSet::new();
+    for n in notes.iter().filter(|n| seen.insert((n["from_slug"].to_string(), n["text"].to_string()))) {
         s += &format!("- {}{} (@{}): {}\n", if n["urgent"] == true { "СРОЧНО · " } else { "" }, n["from"].as_str().unwrap_or(""), n["from_slug"].as_str().unwrap_or(""), n["text"].as_str().unwrap_or(""));
     }
     s + "</senate-notes>\n\n"
@@ -28,6 +30,8 @@ pub(crate) fn block(notes: &[Value]) -> String {
 pub(crate) fn attach(a: &App, ctx: &ToolCtx, result: Value) -> Value {
     if let Ok(notes) = a.store.take_notes(&ctx.agent_id) {
         if !notes.is_empty() {
+            let mut seen = std::collections::HashSet::new();
+            let notes: Vec<Value> = notes.into_iter().filter(|n| seen.insert((n["from_slug"].to_string(), n["text"].to_string()))).collect();
             let wrapped = if result.is_object() { result } else { json!({"result": result}) };
             let mut w = wrapped;
             w["notes_from_colleagues"] = json!(notes);

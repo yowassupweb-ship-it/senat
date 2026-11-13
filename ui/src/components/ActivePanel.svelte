@@ -34,9 +34,27 @@
   const runs = $derived(app.live);
   // One card per specialist: what they do now, and below it what waits for them — not a card per queued turn.
   const rank = (r: LiveRun) => (r.awaiting ? 0 : r.status === 'running' ? 1 : 2);
+  // A council session: colleagues called into a chat by one specialist, with that specialist's own turns there — one
+  // card, every member with their state, instead of a card per member.
+  const councils = $derived.by(() => {
+    const by = new Map<string, { key: string; caller: string; thread_id: string | null; title: string; members: LiveRun[] }>();
+    for (const r of runs) {
+      const caller = r.asked_by;
+      if (!caller) continue;
+      const key = `${r.thread_id}:${caller}`;
+      const c = by.get(key) ?? { key, caller, thread_id: r.thread_id, title: r.title, members: [] };
+      c.members.push(r);
+      by.set(key, c);
+    }
+    // the caller's own turns in that chat belong to the session too
+    for (const c of by.values()) for (const r of runs) if (r.agent_id === c.caller && r.thread_id === c.thread_id && !r.asked_by) c.members.push(r);
+    for (const c of by.values()) c.members.sort((a, b) => rank(a) - rank(b) || a.since - b.since);
+    return [...by.values()];
+  });
+  const inCouncil = $derived(new Set(councils.flatMap((c) => c.members.map((m) => m.session_id))));
   const groups = $derived.by(() => {
     const by = new Map<string, LiveRun[]>();
-    for (const r of runs) by.set(r.agent_id, [...(by.get(r.agent_id) ?? []), r]);
+    for (const r of runs) if (!inCouncil.has(r.session_id)) by.set(r.agent_id, [...(by.get(r.agent_id) ?? []), r]);
     return [...by.entries()]
       .map(([agent_id, list]) => {
         const sorted = [...list].sort((a, b) => rank(a) - rank(b) || a.since - b.since);
@@ -140,6 +158,28 @@
       <button class="icon-btn" onclick={toggle} aria-label="Свернуть панель" title={busy ? 'Свернуть до конца работы' : 'Свернуть'}><Icon name="right" size={15} /></button>
     </header>
     <div class="list">
+      {#each councils as c (c.key)}
+        {@const caller = agentById(c.caller)}
+        <article class="run council" class:wait={c.members.some((m) => m.awaiting)}>
+          <div class="ch">
+            <span class="ct"><Icon name="users" size={13} />Заседание совета</span>
+            <button class="btn sm" onclick={() => c.members.forEach(stopRun)} aria-label="Остановить всё заседание"><Icon name="stop" size={10} filled />Всех</button>
+          </div>
+          <button class="where" onclick={() => c.members[0] && openRun(c.members[0])} title={c.title || 'Открыть'}>{c.title || 'Чат'}</button>
+          <div class="faint cs">созвал {caller?.name ?? 'специалист'}</div>
+          <ul class="members">
+            {#each c.members as m (m.session_id)}
+              {@const ag = agentById(m.agent_id)}
+              <li class:wait={m.awaiting}>
+                <Avatar name={ag?.name} color={ag?.accent} size={20} />
+                <span class="mn">{ag?.name ?? 'Специалист'}</span>
+                <span class="ms">{#if m.status === 'running'}<i class="pulse" aria-hidden="true"></i>{/if}{stateOf(m)} · {dur(m.since)}</span>
+                <button class="icon-btn qs" onclick={() => stopRun(m)} aria-label={`Остановить: ${ag?.name ?? 'специалиста'}`} title="Остановить"><Icon name="x" size={12} /></button>
+              </li>
+            {/each}
+          </ul>
+        </article>
+      {/each}
       {#each groups as g (g.agent_id)}
         {@const ag = agentById(g.agent_id)}
         {@const r = g.lead}
@@ -256,6 +296,15 @@
   .where:hover { text-decoration: underline; }
   .foot .btn { display: inline-flex; align-items: center; gap: 5px; }
 
+  .council .ch { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .ct { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 600; }
+  .council .where { flex: none; }
+  .cs { font-size: 11.5px; margin-top: -4px; }
+  .members { list-style: none; margin: 0; padding: 6px 0 0; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 4px; }
+  .members li { display: flex; align-items: center; gap: 7px; min-width: 0; font-size: 12.5px; }
+  .members li.wait .ms { color: var(--warn); }
+  .mn { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  .ms { display: inline-flex; align-items: center; gap: 5px; margin-left: auto; color: var(--fg-3); font-size: 11.5px; white-space: nowrap; font-variant-numeric: tabular-nums; }
   .ask { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
   .aq { font-size: 12.5px; line-height: 1.4; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 3; line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
   .ac { font-size: 11.5px; padding: 4px 6px; border-radius: var(--radius-s); background: var(--bg-sunken); overflow-wrap: anywhere; max-height: 72px; overflow: auto; }

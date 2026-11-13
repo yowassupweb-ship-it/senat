@@ -159,6 +159,8 @@
   let stick = $state(true);
   // height of the floating composer: the message list keeps that much room at its end
   let dockH = $state(0);
+  /** Discussions the person folded to one line, by post key. */
+  let folded = $state<Record<string, boolean>>({});
   // Following the output is the reader's choice, made by scrolling: up means "I am reading, leave me alone",
   // all the way down means "follow again". New content growing under them changes neither (it does not move
   // the scroll position), so a long answer arriving never makes it let go, and never snaps it back.
@@ -425,14 +427,20 @@
             {:else}
               {@const who = agentById(it.p.author)}
               <!-- the caller's message to colleagues, as a chat message: the same request to several is said once -->
-              <section class="post" aria-label="Обсуждение">
+              {@const asks = asksOf(it.p.calls)}
+              {@const called = new Set(asks.flatMap((x) => x.to)).size}
+              {@const shut = !!folded[it.p.key]}
+              <section class="post" class:shut aria-label="Заседание совета">
                 <div class="ph">
+                  <button class="fold" onclick={() => (folded[it.p.key] = !shut)} aria-expanded={!shut} aria-label={shut ? 'Развернуть обсуждение' : 'Свернуть обсуждение'} title={shut ? 'Развернуть' : 'Свернуть'}><Icon name={shut ? 'right' : 'down'} size={13} /></button>
                   <Avatar name={who?.name} color={who?.accent} size={22} />
                   <b>{who?.name ?? 'Специалист'}</b>
-                  <span class="gather"><Icon name="users" size={12} />{asksOf(it.p.calls).reduce((n, x) => n + x.to.length, 0) > 1 ? 'собрал коллег' : 'зовёт коллегу'}</span>
+                  <span class="gather"><Icon name="users" size={12} />{called > 1 ? 'Заседание совета' : 'зовёт коллегу'}</span>
+                  {#if shut}<span class="faint sum">{called} {called === 1 ? 'участник' : called < 5 ? 'участника' : 'участников'} · {it.p.comments.length} {it.p.comments.length % 10 === 1 && it.p.comments.length % 100 !== 11 ? 'ответ' : [2, 3, 4].includes(it.p.comments.length % 10) && ![12, 13, 14].includes(it.p.comments.length % 100) ? 'ответа' : 'ответов'}{#if it.p.comments.some((c) => c.status === 'working' || c.status === 'queued')} · идёт{/if}</span>{/if}
                   <time class="faint">{new Date(it.p.calls[0].created_at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}</time>
                 </div>
-                {#each asksOf(it.p.calls) as ask (ask.key)}
+                {#if !shut}
+                {#each asks as ask (ask.key)}
                   <p class="say">
                     {#each ask.to as id (id)}{@const to = agentById(id)}<span class="mention">@{to?.name ?? 'коллега'}</span>{' '}{/each}{ask.text}
                   </p>
@@ -443,6 +451,7 @@
                       <MessageView m={c} nested onanswer={answer} onstop={stop} onretry={retry} onimage={(a) => (lightbox = a)} />
                     {/each}
                   </div>
+                {/if}
                 {/if}
               </section>
             {/if}
@@ -577,6 +586,30 @@
     align-items: center;
     gap: 8px;
     margin-bottom: 4px;
+  }
+.fold {
+    width: 22px;
+    height: 22px;
+    margin-left: -26px;
+    display: inline-grid;
+    place-items: center;
+    border-radius: 6px;
+    color: var(--fg-3);
+  }
+  .fold:hover {
+    background: var(--bg-hover);
+    color: var(--fg);
+  }
+  .fold:focus-visible {
+    outline: 2px solid var(--focus, var(--fg-2));
+    outline-offset: 1px;
+  }
+  .sum {
+    font-size: 12px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
   }
   .ph b {
     font-weight: 600;

@@ -380,6 +380,10 @@ export interface LiveRun {
   ask?: { question?: string; tool?: string; command?: string; file?: string; always?: string | null; dir?: { label: string; path: string } | null } | null;
   /** A question to the person (senate_ask_person). */
   question?: { text: string; options?: string[] } | null;
+  /** Answers a colleague's call (that colleague's id): a member of their council session. */
+  asked_by?: string | null;
+  /** The caller going on after a colleague answered. */
+  reply_from?: string | null;
   plan: { done: number; total: number; current: string } | null;
 }
 

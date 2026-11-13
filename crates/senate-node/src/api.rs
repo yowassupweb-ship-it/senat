@@ -231,6 +231,9 @@ async fn live(State(a): S) -> R {
                 "question": if props["question"]["state"] == "pending" { json!({"text": props["question"]["text"], "options": props["question"]["options"]}) } else { Value::Null },
                 "plan": if todos.is_empty() { Value::Null } else { json!({"done": done, "total": todos.len(), "current": current}) },
                 "backend": props["backend"],
+                // a turn that answers a colleague's call belongs to that colleague's council session in the panel
+                "asked_by": props["asked_by"],
+                "reply_from": props["reply_from"],
             }));
         }
     }

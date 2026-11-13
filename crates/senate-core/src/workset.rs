@@ -273,9 +273,19 @@ pub fn chat_turn_prompt(store: &Store, agent: &Agent, thread: &Thread, text: &st
         s += &named;
         s += &block;
         if !open.is_empty() {
-            s += "## Твои открытые задача\n";
+            s += "## Твои открытые задачи\n";
             for o in open.iter().take(8) {
-                s += &format!("- {} [{}] (id {}){}\n", o.title, o.state.as_str(), &o.id[..8], if o.next_step.is_empty() { String::new() } else { format!(" — дальше: {}", clip(&o.next_step, 120)) });
+                // enough to act on without a lookup: what counts as done, what stops it, what comes next
+                s += &format!("- {} [{}] (id {})\n", o.title, o.state.as_str(), &o.id[..8]);
+                if !o.criteria.trim().is_empty() {
+                    s += &format!("  критерии: {}\n", clip(&o.criteria, 300));
+                }
+                if !o.blocker.trim().is_empty() {
+                    s += &format!("  препятствие: {}\n", clip(&o.blocker, 300));
+                }
+                if !o.next_step.trim().is_empty() {
+                    s += &format!("  дальше: {}\n", clip(&o.next_step, 400));
+                }
             }
         }
         s += "</senate-context>\n\n";
