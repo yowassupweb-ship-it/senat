@@ -146,7 +146,7 @@ pub fn definitions() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "senate_message_colleague",
-            description: "Записка коллеге — предупреждение, совет, факт, который ему важен прямо сейчас (например: «не запускай npm run build, пока идёт tauri dev»). Доставляется всегда, без ограничений цепочки: если он сейчас работает, увидит её с ближайшим ответом любого инструмента Senate; если нет — в начале следующего хода. Ответ не ждёт; в результате видно, доставлено ли сейчас. Проверить, прочитал ли, — senate_inbox. urgent=true для того, что может что-то сломать.",
+            description: "Записка коллеге — предупреждение, совет, факт, который ему важен прямо сейчас (например: «не запускай npm run build, пока идёт tauri dev»). Если он сейчас работает, увидит её с ближайшим ответом любого инструмента Senate; если свободен — записка сразу запускает его ход здесь (просьбу в ней он выполнит и отчитается тебе отдельным ходом). Ответ не ждёт; в результате видно, что произошло: delivered_now, delivered_started_turn или delivered_next_turn (ход не запущен — тогда скажи человеку). Проверить, прочитал ли, — senate_inbox. urgent=true для того, что может что-то сломать.",
             schema: json!({"type":"object","properties":{"to":{"type":"string","description":"slug коллеги"},"text":{"type":"string"},"urgent":{"type":"boolean"}},"required":["to","text"]}),
         },
         ToolDef {
@@ -645,16 +645,7 @@ fn call_inner(store: &Store, ctx: &ToolCtx, name: &str, a: &Value, bypass: bool)
             }
             let tid = ctx.thread_id.clone().ok_or_else(|| Error::invalid("позвать коллегу можно только в разговоре"))?;
             let caller = store.get_agent(&ctx.agent_id)?;
-            // how deep in a chain of calls this turn already is (a call, an answer, a call …)
-            let depth = ctx
-                .session_id
-                .as_deref()
-                .and_then(|s| store.get_session(s).ok())
-                .and_then(|s| s.message_id)
-                .and_then(|m| store.get_message(&m).ok())
-                .map(|m| m.props["depth"].as_i64().unwrap_or(0))
-                .unwrap_or(0);
-            let r = store.call_colleague(&caller, &tid, s(a, "to"), s(a, "request"), depth, &ctx.default_backend)?;
+            let r = store.call_colleague(&caller, &tid, s(a, "to"), s(a, "request"), turn_depth(store, ctx), &ctx.default_backend)?;
             Ok(json!({"status": "called", "to": r["to"], "message_id": r["message_id"], "note": "коллега ответит в этом разговоре; ответ вернётся к тебе отдельным ходом"}))
         }
         "senate_message_colleague" => {
@@ -669,15 +660,33 @@ fn call_inner(store: &Store, ctx: &ToolCtx, name: &str, a: &Value, bypass: bool)
             }
             let urgent = a.get("urgent").and_then(|v| v.as_bool()).unwrap_or(false);
             let id = store.add_note(ctx.thread_id.as_deref(), &from.id, &to.id, &text, urgent)?;
+            let busy = store.agent_running(&to.id)? || store.agent_queued(&to.id)?;
+            // Free colleague: a note is not left lying until they happen to work — it wakes them, like a call (the
+            // note itself comes in their turn's notes). The call-chain limit still holds, and says so plainly.
+            if !busy {
+                if let Some(tid) = ctx.thread_id.clone() {
+                    let request = format!("Тебе записка от {} (@{}) — она в начале этого хода. Если в ней просьба — выполни её и коротко отчитайся; если это сведения — учти и ответь одной строкой.", from.name, from.slug);
+                    match store.call_colleague(&from, &tid, &to.slug, &request, turn_depth(store, ctx), &ctx.default_backend) {
+                        Ok(_) => {
+                            return Ok(json!({"status": "delivered_started_turn", "note_id": id, "note": format!("{} был свободен: записка запустила его ход в этом разговоре. Его ответ вернётся к тебе отдельным ходом.", to.name)}));
+                        }
+                        Err(e) => {
+                            if let Some(t) = &ctx.thread_id {
+                                let _ = store.post_message(t, "agent", Some(&from.id), &format!("Записка @{}: {}", to.slug, text), json!({"note": {"to": to.id, "id": id, "urgent": urgent}}), MessageStatus::Done, None);
+                            }
+                            return Ok(json!({"status": "delivered_next_turn", "note_id": id, "note": format!("Записка сохранена, но ход {} НЕ запущен ({e}). Он увидит её, только когда начнёт работать. Если нужно сейчас — скажи человеку.", to.name)}));
+                        }
+                    }
+                }
+            }
             // a visible trace in the chat, so the person sees what colleagues told each other
             if let Some(t) = &ctx.thread_id {
                 let _ = store.post_message(t, "agent", Some(&from.id), &format!("Записка @{}: {}", to.slug, text), json!({"note": {"to": to.id, "id": id, "urgent": urgent}}), MessageStatus::Done, None);
             }
-            let working = store.agent_running(&to.id)?;
             Ok(json!({
-                "status": if working { "delivered_now" } else { "delivered_next_turn" },
+                "status": if busy { "delivered_now" } else { "delivered_next_turn" },
                 "note_id": id,
-                "note": if working { format!("{} сейчас работает и увидит записку с ближайшим ответом инструмента Senate. Прочитана ли — senate_inbox.", to.name) } else { format!("{} сейчас не работает: увидит записку в начале следующего хода. Если это нужно сделать сейчас — senate_call_colleague или senate_ask_colleague.", to.name) },
+                "note": if busy { format!("{} сейчас работает (или его ход в очереди) и увидит записку с ближайшим ответом инструмента Senate или в начале хода. Прочитана ли — senate_inbox.", to.name) } else { format!("{} увидит записку в начале следующего хода.", to.name) },
             }))
         }
         "senate_inbox" => {
@@ -756,6 +765,17 @@ fn call_inner(store: &Store, ctx: &ToolCtx, name: &str, a: &Value, bypass: bool)
         }
         other => Err(Error::invalid(format!("неизвестный инструмент {other}"))),
     }
+}
+
+/// How deep in a chain of calls this turn already is (a call, an answer, a call …).
+fn turn_depth(store: &Store, ctx: &ToolCtx) -> i64 {
+    ctx.session_id
+        .as_deref()
+        .and_then(|s| store.get_session(s).ok())
+        .and_then(|s| s.message_id)
+        .and_then(|m| store.get_message(&m).ok())
+        .map(|m| m.props["depth"].as_i64().unwrap_or(0))
+        .unwrap_or(0)
 }
 
 /// Where this run really is: the chat may have been attached after the run started.

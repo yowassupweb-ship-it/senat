@@ -891,12 +891,17 @@ fn a_note_reaches_a_colleague_and_the_sender_sees_it_read() {
     let t = st.create_thread(NewThread { project_id: Some(p.id.clone()), agent_id: Some(dev.id.clone()), ..Default::default() }).unwrap();
     let ctx = ToolCtx { agent_id: dev.id.clone(), thread_id: Some(t.id.clone()), project_id: Some(p.id.clone()), ..Default::default() };
     let r = tools::call(&st, &ctx, "senate_message_colleague", &json!({"to": arch.slug, "text": "Не запускай npm run build, пока идёт tauri dev", "urgent": true})).unwrap();
-    assert_eq!(r["status"], "delivered_next_turn", "the architect is not working now");
+    assert_eq!(r["status"], "delivered_started_turn", "the architect was free: the note wakes them");
+    assert!(st.agent_queued(&arch.id).unwrap(), "their turn is waiting to start");
+    // a second note while that turn waits does not start another one
+    let again = tools::call(&st, &ctx, "senate_message_colleague", &json!({"to": arch.slug, "text": "И ещё: порт 3012"})).unwrap();
+    assert_eq!(again["status"], "delivered_now");
     // the architect sees it once
     let actx = ToolCtx { agent_id: arch.id.clone(), ..Default::default() };
     let inbox = tools::call(&st, &actx, "senate_inbox", &json!({})).unwrap();
     assert_eq!(inbox["new"][0]["urgent"], true);
     assert!(inbox["new"][0]["text"].as_str().unwrap().contains("tauri dev"));
+    assert_eq!(inbox["new"].as_array().unwrap().len(), 2);
     assert!(tools::call(&st, &actx, "senate_inbox", &json!({})).unwrap()["new"].as_array().unwrap().is_empty());
     // and the developer sees that it was read
     let mine = tools::call(&st, &ctx, "senate_inbox", &json!({})).unwrap();

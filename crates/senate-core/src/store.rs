@@ -1707,6 +1707,12 @@ impl Store {
         Ok(n > 0)
     }
 
+    /// Does the specialist have a turn waiting to start?
+    pub fn agent_queued(&self, agent_id: &str) -> Result<bool> {
+        let n: i64 = self.lock().query_row("SELECT COUNT(*) FROM sessions WHERE status='queued' AND agent_id=?", [agent_id], |r| r.get(0))?;
+        Ok(n > 0)
+    }
+
     /// What became of the notes this agent sent lately: read or still waiting.
     pub fn sent_notes(&self, agent_id: &str, limit: i64) -> Result<Vec<serde_json::Value>> {
         let c = self.lock();
