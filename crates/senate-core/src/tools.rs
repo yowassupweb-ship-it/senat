@@ -665,9 +665,11 @@ fn call_inner(store: &Store, ctx: &ToolCtx, name: &str, a: &Value, bypass: bool)
             // note itself comes in their turn's notes). The call-chain limit still holds, and says so plainly.
             if !busy {
                 if let Some(tid) = ctx.thread_id.clone() {
-                    let request = format!("Тебе записка от {} (@{}) — она в начале этого хода. Если в ней просьба — выполни её и коротко отчитайся; если это сведения — учти и ответь одной строкой.", from.name, from.slug);
+                    // the note's text is the turn's task itself: it survives a failed turn and a retry
+                    let request = format!("Записка от {} (@{}){}:\n{}\n\nЕсли в ней просьба — выполни её и коротко отчитайся; если это сведения — учти и ответь одной строкой.", from.name, from.slug, if urgent { ", срочно" } else { "" }, text);
                     match store.call_colleague(&from, &tid, &to.slug, &request, turn_depth(store, ctx), &ctx.default_backend) {
                         Ok(_) => {
+                            let _ = store.mark_note_delivered(&id);
                             return Ok(json!({"status": "delivered_started_turn", "note_id": id, "note": format!("{} был свободен: записка запустила его ход в этом разговоре. Его ответ вернётся к тебе отдельным ходом.", to.name)}));
                         }
                         Err(e) => {

@@ -271,6 +271,8 @@ pub(crate) async fn execute(app: Arc<App>, s: Session) {
     if let Ok(notes) = store.take_notes(&agent.id) {
         if !notes.is_empty() {
             turn_prompt = crate::notes::block(&notes) + &turn_prompt;
+            // kept with the turn: if it fails and is retried, the notes come again
+            let _ = store.set_session_prompt(&s.id, &turn_prompt);
         }
     }
     if resume.is_none() && !compact_turn {

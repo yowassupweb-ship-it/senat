@@ -893,15 +893,18 @@ fn a_note_reaches_a_colleague_and_the_sender_sees_it_read() {
     let r = tools::call(&st, &ctx, "senate_message_colleague", &json!({"to": arch.slug, "text": "Не запускай npm run build, пока идёт tauri dev", "urgent": true})).unwrap();
     assert_eq!(r["status"], "delivered_started_turn", "the architect was free: the note wakes them");
     assert!(st.agent_queued(&arch.id).unwrap(), "their turn is waiting to start");
+    // the note is the task of that turn itself, so a failed turn's retry still has it
+    let woke = st.list_sessions(Some(&arch.id), None, Some(SessionStatus::Queued), 5).unwrap();
+    assert!(woke[0].prompt.contains("tauri dev"), "the note's text is in the turn's task");
     // a second note while that turn waits does not start another one
     let again = tools::call(&st, &ctx, "senate_message_colleague", &json!({"to": arch.slug, "text": "И ещё: порт 3012"})).unwrap();
     assert_eq!(again["status"], "delivered_now");
     // the architect sees it once
     let actx = ToolCtx { agent_id: arch.id.clone(), ..Default::default() };
+    // what is left unread is only the note that came while that turn waited
     let inbox = tools::call(&st, &actx, "senate_inbox", &json!({})).unwrap();
-    assert_eq!(inbox["new"][0]["urgent"], true);
-    assert!(inbox["new"][0]["text"].as_str().unwrap().contains("tauri dev"));
-    assert_eq!(inbox["new"].as_array().unwrap().len(), 2);
+    assert_eq!(inbox["new"].as_array().unwrap().len(), 1);
+    assert!(inbox["new"][0]["text"].as_str().unwrap().contains("3012"));
     assert!(tools::call(&st, &actx, "senate_inbox", &json!({})).unwrap()["new"].as_array().unwrap().is_empty());
     // and the developer sees that it was read
     let mine = tools::call(&st, &ctx, "senate_inbox", &json!({})).unwrap();

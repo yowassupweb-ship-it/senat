@@ -1701,6 +1701,18 @@ impl Store {
         Ok(notes)
     }
 
+    /// A note whose text went into a turn's task: it is not offered again as an unread one.
+    pub fn mark_note_delivered(&self, id: &str) -> Result<()> {
+        self.lock().execute("UPDATE agent_notes SET delivered_at=? WHERE id=? AND delivered_at IS NULL", params![now_ms(), id])?;
+        Ok(())
+    }
+
+    /// The task of a turn as it was actually given (with the notes that came with it), so a retry gives the same.
+    pub fn set_session_prompt(&self, id: &str, prompt: &str) -> Result<()> {
+        self.lock().execute("UPDATE sessions SET prompt=? WHERE id=?", params![prompt, id])?;
+        Ok(())
+    }
+
     /// Is the specialist in the middle of a turn right now?
     pub fn agent_running(&self, agent_id: &str) -> Result<bool> {
         let n: i64 = self.lock().query_row("SELECT COUNT(*) FROM sessions WHERE status='running' AND agent_id=?", [agent_id], |r| r.get(0))?;
