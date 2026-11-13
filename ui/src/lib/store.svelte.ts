@@ -259,12 +259,39 @@ export function onEvent(fn: (type: string, data: any) => void) {
   return () => listeners.delete(fn);
 }
 
+// many events in a row (a council of several colleagues) cost one fetch of the chat
+const syncTimers = new Map<string, ReturnType<typeof setTimeout>>();
+function syncThread(id: string) {
+  clearTimeout(syncTimers.get(id));
+  syncTimers.set(
+    id,
+    setTimeout(() => {
+      syncTimers.delete(id);
+      get(`/api/threads/${id}/messages`)
+        .then((r: { messages: Message[] }) => {
+          // the fresh page replaces its own messages; older pages already loaded stay
+          const fresh = new Map(r.messages.map((m) => [m.id, m]));
+          const first = r.messages[0]?.created_at ?? Infinity;
+          const older = (app.messages[id] ?? []).filter((m) => !fresh.has(m.id) && m.created_at < first);
+          app.messages[id] = [...older, ...r.messages];
+        })
+        .catch(() => {});
+    }, 400),
+  );
+}
+
 export function startEvents() {
   stop?.();
   stop = openEvents(
     (type, data) => {
       if (type === 'message') {
-        upsertMessage(data as Message);
+        const m = data as Message;
+        const known = app.messages[m.thread_id];
+        // a colleague's answer or a council turn whose call was written on the server without an event of its own:
+        // fetch the chat, so the answer lands under its call and not on its own
+        const p = (m.props ?? {}) as any;
+        if (known && !known.some((x) => x.id === m.id) && (p.asked_by || p.reply_from || p.council || p.council_reply)) syncThread(m.thread_id);
+        upsertMessage(m);
         refreshThreads();
         if (data.status === 'done' || data.status === 'failed') {
           refreshAgents(); // finished work changes level and open tasks
@@ -272,7 +299,11 @@ export function startEvents() {
           if (t?.project_id) loadGit(t.project_id);
           loadThreadGit(data.thread_id);
         }
-      } else if (type === 'thread') refreshThreads();
+      } else if (type === 'thread') {
+        refreshThreads();
+        // something changed inside an open chat (a call, a note): bring it up to date
+        if (data?.id && app.messages[data.id]) syncThread(data.id);
+      }
       else if (type === 'projects') {
         get('/api/projects').then((p) => (app.projects = p)).catch(() => {});
         get('/api/companies').then((c) => (app.companies = c)).catch(() => {});
