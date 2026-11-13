@@ -374,6 +374,10 @@ export interface LiveRun {
   phase: string;
   hint: string;
   awaiting: boolean;
+  /** A permission they wait for: answered right in the panel. */
+  ask?: { question?: string; tool?: string; command?: string; file?: string; always?: string | null; dir?: { label: string; path: string } | null } | null;
+  /** A question to the person (senate_ask_person). */
+  question?: { text: string; options?: string[] } | null;
   plan: { done: number; total: number; current: string } | null;
 }
 

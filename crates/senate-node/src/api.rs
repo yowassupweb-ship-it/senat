@@ -117,6 +117,8 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/runner/job/:id/ask", post(runner_ask))
         .route("/api/runner/skills", get(runner_skills))
         .route("/api/runner/rpc/:id", post(runner_rpc))
+        .route("/api/runner/metrics", post(runner_metrics))
+        .route("/api/metrics", get(metrics))
         .route("/api/runner/workspaces", get(ws_manifest))
         .route("/api/runner/workspaces/file", get(ws_get).put(ws_put).layer(DefaultBodyLimit::max(25 << 20)))
         .route("/api/machines", get(machines))
@@ -219,7 +221,10 @@ async fn live(State(a): S) -> R {
                 "thread_id": s.thread_id, "obligation_id": s.obligation_id, "message_id": s.message_id,
                 "status": s.status.as_str(), "since": s.started_at.unwrap_or(s.created_at),
                 "phase": props["phase"].as_str().unwrap_or(""), "hint": hint,
-                "awaiting": props["ask"]["state"] == "pending",
+                "awaiting": props["ask"]["state"] == "pending" || props["question"]["state"] == "pending",
+                // what they wait for, so it can be answered right in the panel instead of hunting for it in the chat
+                "ask": if props["ask"]["state"] == "pending" { json!({"question": props["ask"]["question"], "tool": props["ask"]["tool"], "command": props["ask"]["input"]["command"], "file": props["ask"]["input"]["file_path"], "always": props["ask"]["always"], "dir": props["ask"]["dir"]}) } else { Value::Null },
+                "question": if props["question"]["state"] == "pending" { json!({"text": props["question"]["text"], "options": props["question"]["options"]}) } else { Value::Null },
                 "plan": if todos.is_empty() { Value::Null } else { json!({"done": done, "total": todos.len(), "current": current}) },
                 "backend": props["backend"],
             }));
@@ -1215,6 +1220,29 @@ async fn preview_link(State(a): S, Path(port): Path<u16>, Query(q): Query<HashMa
     let path = q.get("path").cloned().unwrap_or_default();
     let url = crate::preview::link(&a, port, &path).ok_or_else(|| bad("недопустимый порт"))?;
     ok(json!({"url": url}))
+}
+
+/// A computer's latest load.
+async fn runner_metrics(State(a): S, Json(b): Json<Value>) -> R {
+    let id = b["machine"].as_str().unwrap_or("").to_string();
+    if !id.is_empty() && b["metrics"].is_object() {
+        a.machine_metrics.lock().unwrap().insert(id, b["metrics"].clone());
+    }
+    ok(json!({"ok": true}))
+}
+
+/// How loaded the node and the person's computers are now.
+async fn metrics(State(a): S) -> R {
+    let reported = a.machine_metrics.lock().unwrap().clone();
+    let machines: Vec<Value> = a
+        .store
+        .list_nodes()?
+        .into_iter()
+        .filter(|n| n.kind == "machine" && a.runner.machine_online(&n.id))
+        .map(|n| json!({"id": n.id, "name": n.name, "metrics": reported.get(&n.id).cloned().unwrap_or(Value::Null)}))
+        .collect();
+    let on_server = a.cfg.bind.ip().is_unspecified();
+    ok(json!({"node": {"name": if on_server { "Сервер" } else { "Этот компьютер" }, "server": on_server, "metrics": a.node_metrics.lock().unwrap().clone()}, "machines": machines}))
 }
 
 async fn runner_rpc(State(a): S, Path(id): Path<String>, Json(b): Json<Value>) -> R {

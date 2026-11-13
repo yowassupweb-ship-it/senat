@@ -16,6 +16,7 @@ pub mod s3;
 mod project_git;
 mod reflect;
 mod uploads;
+mod metrics;
 mod notes;
 mod preview;
 mod usage;
@@ -104,6 +105,9 @@ pub struct App {
     pub(crate) preview_key: String,
     /// Questions a specialist asked the person mid-work, by the message they are on: (question id, the answer's way back).
     pub(crate) questions: Mutex<HashMap<String, (String, tokio::sync::oneshot::Sender<String>)>>,
+    /// The node's own load (metrics.rs), and the load each computer reported last.
+    pub(crate) node_metrics: Mutex<serde_json::Value>,
+    pub(crate) machine_metrics: Mutex<HashMap<String, serde_json::Value>>,
 }
 
 impl App {
@@ -252,6 +256,8 @@ pub async fn serve(cfg: Config) -> Result<Handle, String> {
         matched: Mutex::new(Default::default()),
         preview_key: preview::new_key(),
         questions: Mutex::new(HashMap::new()),
+        node_metrics: Mutex::new(serde_json::Value::Null),
+        machine_metrics: Mutex::new(HashMap::new()),
     });
     accounts::rebuild_caps(&app);
     // Who is logged in is learned in the background: the window must open at once.
@@ -261,6 +267,7 @@ pub async fn serve(cfg: Config) -> Result<Handle, String> {
     }
     accounts::spawn_refresher(&app);
     usage::spawn(&app);
+    metrics::spawn(&app);
 
     executor::recover(&app);
     forum::resume_all(&app);

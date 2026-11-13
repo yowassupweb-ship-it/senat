@@ -1,6 +1,7 @@
 <script lang="ts">
   import { app, attentionCount, go, type View } from '../lib/store.svelte';
   import { patch } from '../lib/api';
+  import LoadMeter from './LoadMeter.svelte';
   import { ctx, type MenuItem } from '../lib/contextmenu.svelte';
   import { timeAgo } from '../lib/format';
   import type { Thread } from '../lib/types';
@@ -134,6 +135,7 @@
     {#if !chrome}<img class="logo" src="/logo.png" width="52" height="52" alt="Senate" />{/if}
     {#if !app.online}<span class="chip bad" title={app.linkDetail || 'Нет связи с нодой'}>офлайн</span>{/if}
     <span class="grow"></span>
+    <LoadMeter />
     <button class="icon-btn" onclick={() => (app.palette = true)} aria-label="Поиск и команды" title="Поиск (Ctrl+K)"><Icon name="search" size={15} /></button>
   </div>
 

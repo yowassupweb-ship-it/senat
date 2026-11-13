@@ -47,7 +47,9 @@
   const viewThread = $derived(app.view.kind === 'chat' ? app.threads.find((t) => t.id === (app.view as any).id) : undefined);
   const viewFolder = $derived(!!viewThread && (!!app.projects.find((p) => p.id === viewThread.project_id)?.root_path || !!app.git['t:' + viewThread.id]?.available));
   const busy = $derived(runs.some((r) => r.status === 'running' || r.status === 'queued' || r.awaiting));
-  const open = $derived(pinned || (busy && !dismissed && wide));
+  // someone waiting for the person's answer opens the panel even when it was folded: the answer is right there
+  const waiting = $derived(runs.some((r) => r.ask || r.question));
+  const open = $derived(pinned || waiting || (busy && !dismissed && wide));
   $effect(() => {
     if (!busy) dismissed = false;
   });
@@ -86,6 +88,32 @@
     if (r.thread_id) go({ kind: 'chat', id: r.thread_id });
     else if (r.obligation_id) go({ kind: 'obligations', id: r.obligation_id });
   }
+  // A permission answered right here: no hunting for the card in a long chat.
+  let answering = $state<string | null>(null);
+  async function decide(r: LiveRun, allow: boolean, scope?: 'always' | 'dir') {
+    if (!r.message_id) return;
+    answering = r.session_id;
+    try {
+      await post(`/api/messages/${r.message_id}/answer`, { decision: allow ? 'allow' : 'deny', ...(allow && scope === 'always' ? { always: true } : {}), ...(allow && scope === 'dir' ? { scope: 'dir' } : {}) });
+    } catch {
+      /* already answered elsewhere: the next refresh shows it */
+    } finally {
+      answering = null;
+    }
+    soon();
+  }
+  async function reply(r: LiveRun, text: string) {
+    if (!r.message_id || !text.trim()) return;
+    try {
+      await post(`/api/messages/${r.message_id}/question`, { answer: text.trim() });
+    } catch {
+      /* closed already */
+    }
+    soon();
+  }
+  let replies = $state<Record<string, string>>({});
+  const dirShort = (p: string) => p.replace(/[\\/]+$/, '').split(/[\\/]/).slice(-2).join('/');
+
   async function stopRun(r: LiveRun) {
     if (!r.message_id) return;
     try {
@@ -117,7 +145,27 @@
             <Avatar name={ag?.name} color={ag?.accent} size={26} />
             <div class="nm"><b>{ag?.name ?? 'Специалист'}</b><span class="st">{#if r.status === 'running'}<i class="pulse" aria-hidden="true"></i>{/if}{stateOf(r)} · {dur(r.since)}</span></div>
           </div>
-          {#if r.hint}<div class="hint">{r.hint}</div>{/if}
+          {#if r.ask}
+            <div class="ask" role="group" aria-label="Запрос разрешения">
+              <span class="aq">{r.ask.question || 'Нужно разрешение'}</span>
+              {#if r.ask.command}<code class="ac">{r.ask.command}</code>{:else if r.ask.file}<code class="ac">{r.ask.file}</code>{/if}
+              <div class="aa">
+                <button class="btn sm primary" disabled={answering === r.session_id} onclick={() => decide(r, true)}>Разрешить</button>
+                {#if r.ask.dir}<button class="btn sm" disabled={answering === r.session_id} onclick={() => decide(r, true, 'dir')} title={r.ask.dir.label}>В папке {dirShort(r.ask.dir.path)}</button>
+                {:else if r.ask.always}<button class="btn sm" disabled={answering === r.session_id} onclick={() => decide(r, true, 'always')} title={r.ask.always}>Всегда</button>{/if}
+                <button class="btn sm" disabled={answering === r.session_id} onclick={() => decide(r, false)}>Отклонить</button>
+              </div>
+            </div>
+          {:else if r.question}
+            <div class="ask" role="group" aria-label="Вопрос к вам">
+              <span class="aq">{r.question.text}</span>
+              {#if r.question.options?.length}<div class="aa">{#each r.question.options as o}<button class="btn sm" onclick={() => reply(r, o)}>{o}</button>{/each}</div>{/if}
+              <form class="aa" onsubmit={(e) => { e.preventDefault(); reply(r, replies[r.session_id] ?? ''); replies[r.session_id] = ''; }}>
+                <input class="field" bind:value={replies[r.session_id]} placeholder="Ответ" aria-label="Ответ специалисту" />
+                <button class="btn sm primary" type="submit">Ответить</button>
+              </form>
+            </div>
+          {:else if r.hint}<div class="hint">{r.hint}</div>{/if}
           {#if r.plan}
             <div class="plan" title={r.plan.current}>
               <span class="bar" aria-hidden="true"><i style="width:{Math.round((r.plan.done / Math.max(1, r.plan.total)) * 100)}%"></i></span>
@@ -204,6 +252,11 @@
   .where:hover { text-decoration: underline; }
   .foot .btn { display: inline-flex; align-items: center; gap: 5px; }
 
+  .ask { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+  .aq { font-size: 12.5px; line-height: 1.4; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 3; line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+  .ac { font-size: 11.5px; padding: 4px 6px; border-radius: var(--radius-s); background: var(--bg-sunken); overflow-wrap: anywhere; max-height: 72px; overflow: auto; }
+  .aa { display: flex; flex-wrap: wrap; gap: 6px; }
+  .aa .field { flex: 1; min-width: 0; height: 28px; }
   .queue { list-style: none; margin: 0; padding: 6px 0 0; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 2px; }
   .queue li { display: flex; align-items: center; gap: 4px; min-width: 0; }
   .qw { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 6px; padding: 3px 4px; border-radius: var(--radius-s); text-align: left; font-size: 12px; }

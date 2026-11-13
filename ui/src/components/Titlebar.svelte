@@ -1,6 +1,7 @@
 <script lang="ts">
   import { app } from '../lib/store.svelte';
   import Icon from './Icon.svelte';
+  import LoadMeter from './LoadMeter.svelte';
 
   // The window header of the desktop app (the system frame is off): logo, a search bar, window buttons.
   const call = (cmd: string) => {
@@ -16,6 +17,7 @@
   <div class="brand" data-tauri-drag-region><img class="mark" src="/logo.png" alt="" width="24" height="24" data-tauri-drag-region /><span class="name" data-tauri-drag-region>Senate</span></div>
   <div class="mid" data-tauri-drag-region>
     {#if app.ready}
+      <LoadMeter />
       <button class="search" onclick={() => (app.palette = true)} aria-label="Поиск и команды">
         <Icon name="search" size={14} /><span>Поиск и команды</span><kbd>Ctrl K</kbd>
       </button>
@@ -57,7 +59,7 @@
   }
   .search:hover { color: var(--fg-2); background: var(--bg-hover); }
   .search span { flex: 1; min-width: 0; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .mid { min-width: 0; }
+  .mid { min-width: 0; gap: 8px; }
   kbd { font: 11px var(--mono, monospace); padding: 2px 6px; border-radius: 5px; background: var(--bg-hover); color: var(--fg-2); }
   .ctl { display: flex; align-self: stretch; }
   .wb { width: 46px; display: grid; place-items: center; color: var(--fg-2); border-radius: 0; }

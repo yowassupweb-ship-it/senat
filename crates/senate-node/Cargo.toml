@@ -31,3 +31,4 @@ rust-embed = "8"
 futures-util = "0.3"
 tokio-stream = { version = "0.1", features = ["sync"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+sysinfo = { version = "0.33", default-features = false, features = ["system", "disk"] }
