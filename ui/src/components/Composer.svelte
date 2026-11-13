@@ -13,7 +13,7 @@
 
 <script lang="ts">
   import { app } from '../lib/store.svelte';
-  import { openExternal, post, upload, type Uploaded } from '../lib/api';
+  import { currentConnection, get, openExternal, post, upload, type Uploaded } from '../lib/api';
   import { MODE_LABEL, N, count } from '../lib/format';
   import BrandMark from './BrandMark.svelte';
   import Avatar from './Avatar.svelte';
@@ -56,7 +56,7 @@
     autofocus?: boolean;
     compact?: boolean;
     /** Link to the local dev server, set by the specialist; replaces the keyboard hint. */
-    preview?: { url: string; label: string };
+    preview?: { url: string; label: string; on?: 'node' | 'machine' };
     threadId?: string;
     /** Branch and number of changes of the project folder; the chip toggles the changes panel. */
     git?: { label: string; count: number; active: boolean; title?: string };
@@ -97,6 +97,19 @@
   // The desktop window has no way to open external links itself: the node opens it in the system browser.
   async function openPreview(e: MouseEvent) {
     if (!preview) return;
+    if (preview.on === 'node') {
+      // started on the server: its localhost is not this computer's — the node passes the page through
+      e.preventDefault();
+      try {
+        const u = new URL(preview.url);
+        const r = await get(`/api/preview/${u.port || '80'}?path=${encodeURIComponent(u.pathname.slice(1) + u.search)}`);
+        const full = currentConnection().url.replace(/\/+$/, '') + r.url;
+        if (!openExternal(full)) window.open(full, '_blank', 'noopener');
+      } catch {
+        // an older node cannot pass pages through: nothing better to open
+      }
+      return;
+    }
     // the desktop window opens it itself (on this computer, not on the node); a plain browser follows the anchor
     if (openExternal(preview.url)) e.preventDefault();
   }
@@ -392,7 +405,7 @@
         {/if}
         {#if preview}
           <a class="pill link" href={preview.url} target="_blank" rel="noopener noreferrer" onclick={openPreview} title={preview.url}>
-            <Icon name="link" size={13} /><span class="pl">{preview.label}</span><span class="pu faint">{preview.url.replace(/^https?:\/\//, '')}</span>
+            <Icon name="link" size={13} /><span class="pl">{preview.label}</span><span class="pu faint">{preview.on === 'node' ? 'на сервере · ' : ''}{preview.url.replace(/^https?:\/\//, '')}</span>
           </a>
         {/if}
         {#if todos.length}

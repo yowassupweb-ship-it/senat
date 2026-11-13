@@ -6,7 +6,7 @@
   import type { Message } from '../lib/types';
   import { MODE_LABEL } from '../lib/format';
   import Avatar from './Avatar.svelte';
-  import ChangesPanel from './ChangesPanel.svelte';
+  import ProjectPanel from './ProjectPanel.svelte';
   import Chamber from './Chamber.svelte';
   import Composer, { type Settings, type Todo } from './Composer.svelte';
   import Icon from './Icon.svelte';
@@ -321,6 +321,9 @@
       {:else if thread && thread.kind === 'chat'}
         <button class="icon-btn" onclick={() => (forumDialog = true)} aria-label="Вынести на форум" title="Вынести на форум"><Icon name="forum" size={15} /></button>
       {/if}
+      {#if thread && (project?.root_path || git?.available)}
+        <button class="icon-btn" onclick={() => (app.panel = !app.panel)} aria-pressed={app.panel} aria-label="Панель проекта: файлы и изменения" title="Файлы и изменения"><Icon name="panel" size={15} /></button>
+      {/if}
       {#if thread}
         <button class="icon-btn" onclick={togglePin} aria-label={thread.pinned ? 'Открепить' : 'Закрепить'} title={thread.pinned ? 'Открепить' : 'Закрепить'}><Icon name="pin" size={15} /></button>
         {#if thread.kind !== 'lounge'}<button class="icon-btn" onclick={archive} aria-label="В архив" title="В архив"><Icon name="archive" size={15} /></button>{/if}
@@ -386,8 +389,8 @@
   {/if}
 
   {#if forumDialog}<ForumDialog onclose={() => (forumDialog = false)} topic={[...messages].reverse().find((m) => m.author_kind === 'user')?.body ?? ''} project={project?.id ?? ''} fromThread={threadId ?? ''} />{/if}
-  {#if app.panel && project?.root_path}
-    <ChangesPanel threadId={threadId} />
+  {#if app.panel && threadId && (project?.root_path || git?.available)}
+    <ProjectPanel {threadId} projectId={project?.id ?? ''} />
   {/if}
 </div>
 

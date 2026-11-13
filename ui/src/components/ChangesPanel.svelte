@@ -6,7 +6,8 @@
   import Icon from './Icon.svelte';
 
   // `threadId`: the folder the chat works in (works without a project too); `projectId`: that project's folder.
-  let { projectId = '', threadId = '' }: { projectId?: string; threadId?: string } = $props();
+  // `bare`: inside the project panel, which has its own header.
+  let { projectId = '', threadId = '', bare = false }: { projectId?: string; threadId?: string; bare?: boolean } = $props();
 
   const api = $derived(threadId ? `/api/threads/${threadId}` : `/api/projects/${projectId}`);
   const reload = () => (threadId ? loadThreadGit(threadId) : loadGit(projectId));
@@ -43,21 +44,23 @@
   });
 </script>
 
-<aside class="panel" aria-label="Изменения в проекте">
-  <header>
-    <b>Изменения</b>
-    <span class="faint">{git?.available ? git.stat || 'без изменений' : ''}</span>
-    <span class="grow"></span>
-    <button class="icon-btn" onclick={reload} aria-label="Обновить"><Icon name="refresh" size={14} /></button>
-    <button class="icon-btn" onclick={() => (app.panel = false)} aria-label="Закрыть"><Icon name="x" size={14} /></button>
-  </header>
+<svelte:element this={bare ? 'div' : 'aside'} class="panel" class:bare aria-label="Изменения в проекте">
+  {#if !bare}
+    <header>
+      <b>Изменения</b>
+      <span class="faint">{git?.available ? git.stat || 'без изменений' : ''}</span>
+      <span class="grow"></span>
+      <button class="icon-btn" onclick={reload} aria-label="Обновить"><Icon name="refresh" size={14} /></button>
+      <button class="icon-btn" onclick={() => (app.panel = false)} aria-label="Закрыть"><Icon name="x" size={14} /></button>
+    </header>
+  {/if}
 
   {#if !git}
     <p class="faint pad">Загрузка…</p>
   {:else if !git.available}
     <p class="faint pad">Недоступно: {git.reason}. Папка проекта должна быть git-репозиторием.</p>
   {:else}
-    <div class="meta faint"><Icon name="branch" size={12} /> {git.branch} · {git.last_commit}</div>
+    <div class="meta faint"><Icon name="branch" size={12} /> {git.branch} · {git.last_commit}{#if bare} · {git.stat || 'без изменений'}{/if}</div>
     <ul>
       {#each git.changes ?? [] as c (c.path)}
         <li>
@@ -78,9 +81,15 @@
       </div>
     {/if}
   {/if}
-</aside>
+</svelte:element>
 
 <style>
+  .panel.bare {
+    width: auto;
+    border: 0;
+    background: none;
+    flex: 1;
+  }
   .panel {
     width: 380px;
     flex: none;

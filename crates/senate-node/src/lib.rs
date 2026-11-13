@@ -16,7 +16,9 @@ pub mod s3;
 mod project_git;
 mod reflect;
 mod uploads;
+mod preview;
 mod usage;
+mod workspace;
 
 use senate_core::tools::ToolCtx;
 use senate_core::Store;
@@ -93,6 +95,12 @@ pub struct App {
     pub(crate) forums: Mutex<std::collections::HashSet<String>>,
     /// Specialists who work on a person's computer: the queue of their jobs.
     pub runner: runner::Hub,
+    /// The computer this node runs on (the same id its app uses there), so a project folder kept here is read here.
+    pub machine_id: String,
+    /// Computers already checked for the folders of projects that name no computer.
+    pub(crate) matched: Mutex<std::collections::HashSet<String>>,
+    /// Opens `/preview/<port>/` pages (see preview.rs); new on every start.
+    pub(crate) preview_key: String,
 }
 
 impl App {
@@ -237,6 +245,9 @@ pub async fn serve(cfg: Config) -> Result<Handle, String> {
         latest: RwLock::new(HashMap::new()),
         forums: Mutex::new(Default::default()),
         runner: Default::default(),
+        machine_id: workspace::machine_identity(&cfg.data_dir).0,
+        matched: Mutex::new(Default::default()),
+        preview_key: preview::new_key(),
     });
     accounts::rebuild_caps(&app);
     // Who is logged in is learned in the background: the window must open at once.

@@ -344,7 +344,13 @@ fn the_agent_controls_the_preview_button_of_its_chat() {
 
     let r = tools::call(&st, &ctx, "senate_preview", &json!({"url": "http://localhost:3000/cruises", "label": "Сайт"})).unwrap();
     assert_eq!(r["status"], "set");
-    assert_eq!(st.get_thread(&t.id).unwrap().meta["preview"], json!({"url": "http://localhost:3000/cruises", "label": "Сайт"}));
+    assert_eq!(st.get_thread(&t.id).unwrap().meta["preview"], json!({"url": "http://localhost:3000/cruises", "label": "Сайт", "on": "machine"}));
+    // started on the server: the button knows to open it through the node
+    let on_node = ToolCtx { on_node: true, ..ctx.clone() };
+    let r = tools::call(&st, &on_node, "senate_preview", &json!({"url": "http://localhost:3006"})).unwrap();
+    assert!(r["note"].as_str().unwrap().contains("через Senate"));
+    assert_eq!(st.get_thread(&t.id).unwrap().meta["preview"]["on"], "node");
+    tools::call(&st, &ctx, "senate_preview", &json!({"url": "http://localhost:3000/cruises", "label": "Сайт"})).unwrap();
 
     // an outside address is refused and the previous button stays
     assert!(tools::call(&st, &ctx, "senate_preview", &json!({"url": "https://evil.example"})).is_err());

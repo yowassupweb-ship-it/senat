@@ -589,6 +589,9 @@ impl Store {
             c.execute("UPDATE projects SET company_id=?, updated_at=? WHERE id=?", params![if cid.is_empty() { None } else { Some(cid) }, now, id])?;
             emit_c(&c, "project.company_changed", "project", id, "user", serde_json::json!({"company": cid}))?;
         }
+        if let Some(nid) = &p.node_id {
+            c.execute("UPDATE projects SET node_id=?, updated_at=? WHERE id=?", params![if nid.is_empty() { None } else { Some(nid) }, now, id])?;
+        }
         if changed.iter().any(|c| ["goal", "criteria", "constraints"].contains(c)) {
             // A changed requirement must reach whoever works on it (Senate.md section 8).
             emit_c(&c, "project.requirements_changed", "project", id, "user", serde_json::json!({"fields": changed}))?;
@@ -2639,6 +2642,8 @@ pub struct ProjectPatch {
     pub mode: Option<String>,
     /// Empty string detaches the project from its company.
     pub company_id: Option<String>,
+    /// The computer the folder lives on (a node of kind "machine"); empty string: the node itself.
+    pub node_id: Option<String>,
 }
 
 fn artifact_from(r: &Row) -> rusqlite::Result<Artifact> {

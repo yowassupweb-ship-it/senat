@@ -1,6 +1,6 @@
 import { get, openEvents } from './api';
 import { readLink } from './link';
-import type { Account, Agent, Attention, Backend, Company, GitStatus, LiveRun, Message, Project, Thread } from './types';
+import type { Account, Agent, Attention, Backend, Company, GitStatus, LiveRun, Machine, Message, Project, Thread } from './types';
 
 export type View =
   | { kind: 'new'; project?: string }
@@ -42,6 +42,17 @@ export const app = $state({
   git: {} as Record<string, GitStatus>,
   sidebar: false,
   panel: false,
+  /** Which side of the project panel is shown: the folder's files or what changed in it. */
+  panelTab: (() => {
+    try {
+      return localStorage.getItem('senate.panelTab') === 'changes' ? 'changes' : 'files';
+    } catch {
+      return 'files';
+    }
+  })() as 'files' | 'changes',
+  /** The person's computers that run the Senate app (where project folders live). */
+  machines: [] as Machine[],
+  nodeMachine: '',
   palette: false,
   theme: 'auto' as 'auto' | 'light' | 'dark',
   drafts: {} as Record<string, string>,
@@ -117,7 +128,21 @@ export async function loadState() {
   app.attention = s.attention;
   app.ready = true;
   refreshLive(true);
+  loadMachines();
 }
+
+export async function loadMachines() {
+  try {
+    const r = await get('/api/machines');
+    app.machines = r.machines ?? [];
+    app.nodeMachine = r.node_machine ?? '';
+  } catch {
+    // an older node has no computers list: the panel then reads folders on the node
+  }
+}
+
+/** The computer a project's folder is on (null: on the node itself). */
+export const machineOf = (p?: Project | null) => (p?.node_id ? app.machines.find((m) => m.id === p.node_id) ?? { id: p.node_id, name: 'Компьютер', os: '', online: false, env: null, last_seen: null } : null);
 
 let tLive: ReturnType<typeof setTimeout> | undefined;
 /** Re-read who is working. Events come in dozens per second while someone writes: at most one read per 600 ms, replaced only on change. */
@@ -222,6 +247,7 @@ export function startEvents() {
       } else if (type === 'accounts') app.accounts = data;
       else if (type === 'agents') get('/api/agents').then((a) => (app.agents = a)).catch(() => {});
       else if (type === 'attention' || type === 'session') refreshAttention();
+      else if (type === 'machines') loadMachines();
       if (type === 'message' || type === 'session' || type === 'thread') refreshLive();
       listeners.forEach((f) => f(type, data));
     },

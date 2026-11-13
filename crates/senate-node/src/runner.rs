@@ -131,28 +131,48 @@ pub(crate) struct JobHub {
     pub cancel: watch::Receiver<bool>,
 }
 
+/// The person's computers that run the Senate app and take work from this node. Several may be connected at once:
+/// a job or a look at a folder goes to the computer it is addressed to ("machine"), or to any when it names none.
 #[derive(Default)]
 pub struct Hub {
     queue: Mutex<VecDeque<Value>>,
     pub(crate) jobs: Mutex<HashMap<String, JobHub>>,
     notify: Notify,
-    last_seen: Mutex<Option<Instant>>,
+    /// machine id → when it last asked for work
+    seen: Mutex<HashMap<String, Instant>>,
+    rpcs: Mutex<HashMap<String, oneshot::Sender<Result<Value, String>>>>,
 }
 
+const ALIVE: Duration = Duration::from_secs(45);
+
 impl Hub {
+    /// Any computer connected.
     pub fn online(&self) -> bool {
-        self.last_seen.lock().unwrap().map(|t| t.elapsed() < Duration::from_secs(45)).unwrap_or(false)
+        self.seen.lock().unwrap().values().any(|t| t.elapsed() < ALIVE)
     }
-    fn seen(&self) {
-        *self.last_seen.lock().unwrap() = Some(Instant::now());
+    pub fn machine_online(&self, id: &str) -> bool {
+        self.seen.lock().unwrap().get(id).map(|t| t.elapsed() < ALIVE).unwrap_or(false)
+    }
+    /// The computer seen most recently: where a job addressed to no computer in particular goes.
+    pub fn latest_machine(&self) -> Option<String> {
+        self.seen.lock().unwrap().iter().filter(|(_, t)| t.elapsed() < ALIVE).min_by_key(|(_, t)| t.elapsed()).map(|(k, _)| k.clone())
+    }
+    pub(crate) fn mark(&self, machine: &str) {
+        self.seen.lock().unwrap().insert(machine.to_string(), Instant::now());
     }
 
-    /// The app asks for work: wait up to ~25 s for a job.
-    pub async fn poll(&self) -> Option<Value> {
-        self.seen();
+    fn take_for(&self, machine: &str) -> Option<Value> {
+        let mut q = self.queue.lock().unwrap();
+        let i = q.iter().position(|j| j["machine"].as_str().map(|m| m.is_empty() || m == machine).unwrap_or(true))?;
+        q.remove(i)
+    }
+
+    /// A computer asks for work: wait up to ~25 s for a job or a request addressed to it.
+    pub async fn poll(&self, machine: &str) -> Option<Value> {
+        self.mark(machine);
         let until = Instant::now() + Duration::from_secs(25);
         loop {
-            if let Some(j) = self.queue.lock().unwrap().pop_front() {
+            if let Some(j) = self.take_for(machine) {
                 return Some(j);
             }
             let left = until.saturating_duration_since(Instant::now());
@@ -160,22 +180,56 @@ impl Hub {
                 return None;
             }
             let _ = tokio::time::timeout(left.min(Duration::from_secs(5)), self.notify.notified()).await;
-            self.seen();
+            self.mark(machine);
         }
     }
 
     pub(crate) fn job(&self, id: &str) -> Option<(mpsc::UnboundedSender<RunnerMsg>, bool)> {
-        self.seen();
         self.jobs.lock().unwrap().get(id).map(|j| (j.to_hub.clone(), *j.cancel.borrow()))
+    }
+
+    /// Ask a computer to carry out one `workspace::op` and wait for the answer.
+    pub async fn rpc(&self, machine: &str, op: &str, args: Value, limit: Duration) -> Result<Value, String> {
+        if !self.machine_online(machine) {
+            return Err("компьютер с этой папкой сейчас не в сети: откройте на нём Senate".into());
+        }
+        let id = uuid::Uuid::new_v4().simple().to_string();
+        let (tx, rx) = oneshot::channel();
+        self.rpcs.lock().unwrap().insert(id.clone(), tx);
+        self.queue.lock().unwrap().push_back(json!({"id": id, "rpc": op, "args": args, "machine": machine}));
+        self.notify.notify_waiters();
+        let r = tokio::time::timeout(limit, rx).await;
+        self.rpcs.lock().unwrap().remove(&id);
+        self.queue.lock().unwrap().retain(|j| j["id"].as_str() != Some(&id));
+        match r {
+            Ok(Ok(v)) => v,
+            _ => Err("компьютер не ответил вовремя".into()),
+        }
+    }
+
+    pub(crate) fn rpc_done(&self, id: &str, result: Result<Value, String>) {
+        if let Some(tx) = self.rpcs.lock().unwrap().remove(id) {
+            let _ = tx.send(result);
+        }
     }
 }
 
 /// One turn of a specialist who works on a person's computer.
-pub(crate) async fn remote_run(app: &Arc<App>, mut spec: RunSpec, slug: &str, approver: &dyn Approver, tx: senate_runtime::EventTx, cancel: senate_runtime::CancelRx) -> Outcome {
+pub(crate) async fn remote_run(app: &Arc<App>, mut spec: RunSpec, slug: &str, machine: Option<&str>, approver: &dyn Approver, tx: senate_runtime::EventTx, cancel: senate_runtime::CancelRx) -> Outcome {
     let fail = |why: &str| Outcome { failure: Some(why.to_string()), ..Default::default() };
-    if !app.runner.online() {
-        return fail("Специалист работает локально, но приложение Senate на вашем компьютере не подключено. Запустите его или переключите специалиста на «На ноде».");
-    }
+    let machine = match machine {
+        Some(m) => {
+            if !app.runner.machine_online(m) {
+                let name = app.store.list_nodes().ok().and_then(|l| l.into_iter().find(|n| n.id == m)).map(|n| n.name).unwrap_or_else(|| "с папкой проекта".into());
+                return fail(&format!("Папка проекта на компьютере «{name}», а он сейчас не в сети. Откройте на нём Senate — работа продолжится там."));
+            }
+            m.to_string()
+        }
+        None => match app.runner.latest_machine() {
+            Some(m) => m,
+            None => return fail("Специалист работает локально, но приложение Senate на вашем компьютере не подключено. Запустите его или переключите специалиста на «На ноде»."),
+        },
+    };
     let id = uuid::Uuid::new_v4().simple().to_string();
     let (mtx, mut mrx) = mpsc::unbounded_channel::<RunnerMsg>();
     app.runner.jobs.lock().unwrap().insert(id.clone(), JobHub { to_hub: mtx, cancel: cancel.clone() });
@@ -183,6 +237,7 @@ pub(crate) async fn remote_run(app: &Arc<App>, mut spec: RunSpec, slug: &str, ap
     spec.work_dir = PathBuf::new();
     let mut job = spec_to_json(&spec, slug, &skills_dir);
     job["id"] = json!(id);
+    job["machine"] = json!(machine);
     app.runner.queue.lock().unwrap().push_back(job);
     app.runner.notify.notify_waiters();
 
@@ -218,7 +273,7 @@ pub(crate) async fn remote_run(app: &Arc<App>, mut spec: RunSpec, slug: &str, ap
                 if !picked && started.elapsed() > Duration::from_secs(60) {
                     break fail("Приложение Senate на компьютере не взяло задачу за минуту. Проверьте, что оно запущено и подключено к этой ноде.");
                 }
-                if !app.runner.online() && picked {
+                if !app.runner.machine_online(&machine) && picked {
                     break fail("Приложение Senate на компьютере перестало отвечать.");
                 }
             }
@@ -324,20 +379,58 @@ impl Approver for RunnerApprover {
     }
 }
 
+/// An MCP server that starts a program by an absolute path works only where that path exists: a server set up on
+/// the person's Windows computer (`C:\…\markitdown-mcp.exe`) cannot start on the Linux node, and the other way
+/// round. Such a server is left out instead of failing every run where it is missing.
+pub(crate) fn usable_here(m: &ExtraMcp) -> bool {
+    if m.kind == "http" {
+        return true;
+    }
+    let looks_absolute = |s: &str| {
+        let b = s.as_bytes();
+        s.starts_with('/') || (b.len() > 2 && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/'))
+    };
+    let cmd_ok = !looks_absolute(&m.command) || Path::new(&m.command).exists();
+    // a script handed to an interpreter (`node /data/mbox-mcp/server.mjs`) must be there as well
+    let args_ok = m.args.iter().filter(|a| looks_absolute(a) && (a.ends_with(".js") || a.ends_with(".mjs") || a.ends_with(".py") || a.ends_with(".exe"))).all(|a| Path::new(a).exists());
+    cmd_ok && args_ok
+}
+
 /// Run on a person's computer: keep asking the hub for work and carry it out with the agent CLIs found here.
 pub async fn run_client(hub: String, token: String, data_dir: PathBuf, mut stop: watch::Receiver<bool>) {
     let hub = hub.trim_end_matches('/').to_string();
     let http = reqwest::Client::builder().timeout(Duration::from_secs(45)).build().unwrap();
+    let (machine_id, machine_name) = crate::workspace::machine_identity(&data_dir);
+    // the tools are looked up once, off the polling path
+    let env = tokio::task::spawn_blocking(crate::workspace::environment).await.unwrap_or(Value::Null);
+    let me = json!({"id": machine_id, "name": machine_name, "os": std::env::consts::OS, "env": env});
     loop {
         if *stop.borrow() {
             return;
         }
-        let r = http.post(format!("{hub}/api/runner/poll")).bearer_auth(&token).json(&json!({})).send().await;
+        let r = http.post(format!("{hub}/api/runner/poll")).bearer_auth(&token).json(&json!({"machine": me})).send().await;
         match r {
             Ok(resp) if resp.status().is_success() => {
                 if let Ok(v) = resp.json::<Value>().await {
                     if let Some(job) = v.get("job").filter(|j| !j.is_null()) {
-                        tokio::spawn(handle_job(hub.clone(), token.clone(), data_dir.clone(), job.clone()));
+                        if let Some(op) = job["rpc"].as_str() {
+                            // a look at a folder: quick, answered at once
+                            let (op, args, id) = (op.to_string(), job["args"].clone(), job["id"].as_str().unwrap_or("").to_string());
+                            let (http, hub, token) = (http.clone(), hub.clone(), token.clone());
+                            tokio::spawn(async move {
+                                let r = tokio::task::spawn_blocking(move || crate::workspace::op(&op, &args)).await.unwrap_or_else(|_| Err("сбой".into()));
+                                let body = match r {
+                                    Ok(v) => json!({"ok": true, "result": v}),
+                                    Err(e) => json!({"ok": false, "error": e}),
+                                };
+                                let _ = http.post(format!("{hub}/api/runner/rpc/{id}")).bearer_auth(&token).json(&body).send().await;
+                            });
+                            continue;
+                        }
+                        let mut job = job.clone();
+                        job["machine_name"] = json!(machine_name);
+                        job["machine_env"] = me["env"].clone();
+                        tokio::spawn(handle_job(hub.clone(), token.clone(), data_dir.clone(), job));
                         continue;
                     }
                 }
@@ -391,8 +484,22 @@ async fn handle_job(hub: String, token: String, data_dir: PathBuf, job: Value) {
 
     // the working folder: the hub's own path means nothing here unless it exists
     let hub_cwd = PathBuf::from(job["cwd"].as_str().unwrap_or(""));
-    let cwd = if hub_cwd.is_dir() { hub_cwd } else { data_dir.join("runner").join("workspaces").join(&safe) };
+    let ws_root = data_dir.join("runner").join("workspaces");
+    // a private folder (no project folder here): it follows the specialist between the node and this computer
+    let private = !hub_cwd.is_dir();
+    let cwd = if private { ws_root.join(&safe) } else { hub_cwd };
     let _ = std::fs::create_dir_all(&cwd);
+    if private {
+        pull_workspaces(&long, &hub, &token, &ws_root).await;
+    }
+    // where the specialist is and what this computer has
+    prompt += &crate::workspace::environment_block(job["machine_name"].as_str().unwrap_or("этот компьютер"), &cwd, &job["machine_env"]);
+    if private {
+        prompt += &format!(
+            "Это твоя личная папка; она общая с сервером: перед работой сюда пришли файлы с сервера, после работы твои изменения уйдут обратно. Папки коллег рядом: {}\\<username> (например, ..\\dev). Их не меняй — скопируй к себе, если нужно править.\n",
+            ws_root.display()
+        );
+    }
     let work_dir = data_dir.join("runner").join("run");
     let _ = std::fs::create_dir_all(&work_dir);
 
@@ -417,6 +524,12 @@ async fn handle_job(hub: String, token: String, data_dir: PathBuf, job: Value) {
                     url: m["url"].as_str().unwrap_or("").into(),
                     headers: pairs(&m["headers"]),
                     trusted: m["trusted"].as_bool().unwrap_or(false),
+                })
+                .filter(usable_here)
+                // `{slug}` in a server's arguments is the specialist: their own browser profile, for one
+                .map(|mut m: ExtraMcp| {
+                    m.args = m.args.iter().map(|a| a.replace("{slug}", &safe)).collect();
+                    m
                 })
                 .collect()
         })
@@ -479,7 +592,101 @@ async fn handle_job(hub: String, token: String, data_dir: PathBuf, job: Value) {
     };
 
     let approver = RunnerApprover { http: long.clone(), hub: hub.clone(), token: token.clone(), job: id.clone(), cancel: cancel_rx.clone() };
+    let started = std::time::SystemTime::now();
     let outcome = senate_runtime::run(spec, &approver, tx, cancel_rx).await;
     let _ = fwd.await;
+    // what the specialist made in their own folder goes back to the node before the turn is reported done
+    if private {
+        push_workspace(&long, &hub, &token, &ws_root, &safe, started).await;
+    }
     let _ = post(format!("/api/runner/job/{id}/event"), json!({"kind": "done", "outcome": outcome_to_json(&outcome)})).await;
+}
+
+/// Before a turn in a private folder: take from the node what is newer there (all specialists' folders).
+async fn pull_workspaces(http: &reqwest::Client, hub: &str, token: &str, ws_root: &Path) -> usize {
+    let Ok(r) = http.get(format!("{hub}/api/runner/workspaces")).bearer_auth(token).timeout(Duration::from_secs(30)).send().await else { return 0 };
+    let Ok(v) = r.json::<Value>().await else { return 0 };
+    let mut n = 0;
+    for f in v["files"].as_array().cloned().unwrap_or_default() {
+        let rel = f["path"].as_str().unwrap_or("");
+        let Some(local) = crate::workspace::sync_path(ws_root, rel) else { continue };
+        let (size, mtime) = (f["size"].as_u64().unwrap_or(0), f["mtime"].as_i64().unwrap_or(0));
+        if !crate::workspace::needs_update(&local, size, mtime) {
+            continue;
+        }
+        let Ok(resp) = http.get(format!("{hub}/api/runner/workspaces/file")).query(&[("path", rel)]).bearer_auth(token).timeout(Duration::from_secs(120)).send().await else { continue };
+        if !resp.status().is_success() {
+            continue;
+        }
+        if let Ok(bytes) = resp.bytes().await {
+            if crate::workspace::write_synced(&local, &bytes, mtime).is_ok() {
+                n += 1;
+            }
+        }
+    }
+    n
+}
+
+/// After a turn: what changed in the specialist's own folder since it started goes back to the node.
+async fn push_workspace(http: &reqwest::Client, hub: &str, token: &str, ws_root: &Path, slug: &str, since: std::time::SystemTime) {
+    let since_ms = since.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0) - 2000;
+    let own = ws_root.join(slug);
+    let files = tokio::task::spawn_blocking(move || crate::workspace::manifest(&own)).await.unwrap_or_default();
+    for f in files.into_iter().filter(|f| f["mtime"].as_i64().unwrap_or(0) >= since_ms) {
+        let rel = format!("{slug}/{}", f["path"].as_str().unwrap_or(""));
+        let Some(local) = crate::workspace::sync_path(ws_root, &rel) else { continue };
+        let Ok(bytes) = tokio::fs::read(&local).await else { continue };
+        let _ = http
+            .put(format!("{hub}/api/runner/workspaces/file"))
+            .query(&[("path", rel.as_str()), ("slug", slug), ("mtime", &f["mtime"].as_i64().unwrap_or(0).to_string())])
+            .bearer_auth(token)
+            .timeout(Duration::from_secs(120))
+            .body(bytes)
+            .send()
+            .await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn work_goes_to_the_computer_it_is_addressed_to() {
+        let hub = Arc::new(Hub::default());
+        hub.mark("home");
+        hub.mark("office");
+        hub.queue.lock().unwrap().push_back(json!({"id": "j1", "machine": "office"}));
+        hub.queue.lock().unwrap().push_back(json!({"id": "j2", "machine": ""}));
+        // the home computer does not take the office's job, but takes one addressed to anyone
+        assert_eq!(hub.take_for("home").unwrap()["id"], "j2");
+        assert!(hub.take_for("home").is_none());
+        assert_eq!(hub.take_for("office").unwrap()["id"], "j1");
+
+        // a look at a folder: asked of the office, answered by it
+        let h = hub.clone();
+        let asker = tokio::spawn(async move { h.rpc("office", "tree", json!({"root": "E:/x"}), Duration::from_secs(5)).await });
+        let req = loop {
+            if let Some(r) = hub.take_for("office") {
+                break r;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        };
+        assert_eq!(req["rpc"], "tree");
+        hub.rpc_done(req["id"].as_str().unwrap(), Ok(json!({"entries": []})));
+        assert_eq!(asker.await.unwrap().unwrap(), json!({"entries": []}));
+
+        // a computer that is away is reported at once, not waited for
+        assert!(hub.rpc("laptop", "tree", json!({}), Duration::from_secs(5)).await.unwrap_err().contains("не в сети"));
+    }
+
+    #[test]
+    fn an_mcp_server_that_lives_elsewhere_is_left_out() {
+        let m = |cmd: &str, args: &[&str]| ExtraMcp { name: "x".into(), kind: "stdio".into(), command: cmd.into(), args: args.iter().map(|s| s.to_string()).collect(), env: vec![], url: String::new(), headers: vec![], trusted: false };
+        assert!(usable_here(&m("npx", &["-y", "pkg"])), "a command found on PATH");
+        assert!(!usable_here(&m("Z:\\nowhere\\tool.exe", &[])), "a program at a path that is not here");
+        assert!(!usable_here(&m("node", &["/nowhere/mbox-mcp-server.mjs"])), "a script that is not here");
+        let http = ExtraMcp { kind: "http".into(), url: "https://x".into(), ..m("", &[]) };
+        assert!(usable_here(&http));
+    }
 }

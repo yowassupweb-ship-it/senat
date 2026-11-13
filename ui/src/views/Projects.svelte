@@ -12,8 +12,17 @@
   let { id }: { id?: string } = $props();
 
   let creating = $state(false);
-  let draft = $state({ name: '', goal: '', root_path: '', company_id: '' });
+  // A new project's folder is looked for on the computer the person used last.
+  const lastMachine = () => [...app.machines].filter((m) => m.online).sort((a, b) => (b.last_seen ?? 0) - (a.last_seen ?? 0))[0]?.id ?? '';
+  let draft = $state({ name: '', goal: '', root_path: '', company_id: '', node_id: '' });
   let picking = $state<'new' | 'edit' | null>(null);
+  /** The computer the folder picker browses (for an existing project: chosen before the folder). */
+  let pickMachine = $state('');
+  const machineOptions = $derived([
+    ...app.machines.map((m) => ({ id: m.id, label: m.name, hint: m.online ? 'в сети' : 'не в сети' })),
+    { id: '', label: 'Сервер', hint: 'папка на самой ноде' },
+  ]);
+  const machineName = (id: string) => (id ? (app.machines.find((m) => m.id === id)?.name ?? 'Компьютер') : 'Сервер');
   let error = $state('');
 
   let d = $state<{ project: Project; members: Agent[]; decisions: Decision[]; obligations: Obligation[]; threads: Thread[]; memory: any[] } | null>(null);
@@ -39,7 +48,7 @@
       const p = await post('/api/projects', draft);
       app.projects = await get('/api/projects');
       creating = false;
-      draft = { name: '', goal: '', root_path: '', company_id: '' };
+      draft = { name: '', goal: '', root_path: '', company_id: '', node_id: '' };
       go({ kind: 'projects', id: p.id });
     } catch (e: any) {
       error = e.message;
@@ -76,11 +85,13 @@
 
 {#if picking}
   <FolderPicker
-    start={picking === 'edit' ? (d?.project.root_path ?? '') : draft.root_path}
+    start={picking === 'edit' ? (pickMachine === (d?.project.node_id ?? '') ? (d?.project.root_path ?? '') : '') : draft.root_path}
+    machine={picking === 'edit' ? pickMachine : draft.node_id}
+    where={machineName(picking === 'edit' ? pickMachine : draft.node_id)}
     onclose={() => (picking = null)}
     onpick={(p) => {
       if (picking === 'new') draft.root_path = p;
-      else save({ root_path: p });
+      else save({ root_path: p, node_id: pickMachine });
       picking = null;
     }}
   />
@@ -96,17 +107,20 @@
         <label>Компания
           <Dropdown block value={draft.company_id} options={[{ id: '', label: 'Без компании' }, ...app.companies.map((c) => ({ id: c.id, label: c.name }))]} label="Компания" onpick={(v) => (draft.company_id = v)} /></label>
         <label>Рабочая папка <small>необязательно — без неё специалисты работают без доступа к вашим файлам</small>
-          <div class="row"><input class="field" bind:value={draft.root_path} placeholder="Не выбрана" /><button class="btn" type="button" onclick={() => (picking = 'new')}><Icon name="folder" size={14} />Выбрать</button></div></label>
+          <div class="row">
+            {#if app.machines.length}<Dropdown value={draft.node_id} options={machineOptions} label="Компьютер с папкой" onpick={(v) => ((draft.node_id = v), (draft.root_path = ''))} />{/if}
+            <input class="field" bind:value={draft.root_path} placeholder="Не выбрана" /><button class="btn" type="button" onclick={() => (picking = 'new')}><Icon name="folder" size={14} />Выбрать</button></div></label>
         <div class="row"><button class="btn primary" type="submit">Создать</button><button class="btn" type="button" onclick={() => (creating = false)}>Отмена</button></div>
         {#if error}<p class="bad">{error}</p>{/if}
       </form>
     {/if}
     <div class="cards">
       {#each app.projects as p (p.id)}
+        {@const _m = p.node_id ? machineName(p.node_id) : ''}
         <button class="card pad click pcard" onclick={() => go({ kind: 'projects', id: p.id })}>
           <div class="row"><Icon name="folder" size={16} /><b>{p.name}</b></div>
           <p class="clamp" class:muted={!!p.goal} class:faint={!p.goal}>{p.goal || 'Цель не задана'}</p>
-          <div class="row">{#if p.open_obligations}<span class="chip">{count(p.open_obligations, N.task)}</span>{/if}{#if p.root_path}<span class="chip" title={p.root_path}>папка подключена</span>{/if}
+          <div class="row">{#if p.open_obligations}<span class="chip">{count(p.open_obligations, N.task)}</span>{/if}{#if p.root_path}<span class="chip" title={p.root_path}>{_m ? `папка на ${_m}` : 'папка подключена'}</span>{/if}
             <span class="row" style="margin-left:auto;gap:0">{#each (p.members ?? []).slice(0, 4) as a (a.id)}<Avatar name={a.name} color={a.accent} size={20} />{/each}</span></div>
         </button>
       {:else}<p class="empty-note">Проектов пока нет.</p>{/each}
@@ -168,9 +182,15 @@
         <div class="section">
           <h2>Рабочая папка</h2>
           <div class="card pad form">
-            {#if d.project.root_path}<div class="mono" style="font-size:12.5px;overflow-wrap:anywhere">{d.project.root_path}</div>{:else}<div class="faint" style="font-size:13px">Не выбрана — специалисты работают без доступа к вашим файлам</div>{/if}
-            <div class="row"><button class="btn" onclick={() => (picking = 'edit')}><Icon name="folder" size={14} />Выбрать…</button>
-              {#if d.project.root_path}<button class="btn" onclick={() => save({ root_path: '' })}>Отвязать</button>{/if}</div>
+            {#if d.project.root_path}
+              <div class="faint" style="font-size:12px">{machineName(d.project.node_id ?? '')}{#if d.project.node_id && !app.machines.find((m) => m.id === d!.project.node_id)?.online} · не в сети{/if}</div>
+              <div class="mono" style="font-size:12.5px;overflow-wrap:anywhere">{d.project.root_path}</div>
+            {:else}<div class="faint" style="font-size:13px">Не выбрана — специалисты работают без доступа к вашим файлам</div>{/if}
+            <div class="row">
+              {#if app.machines.length}<Dropdown value={d.project.node_id ?? ''} options={machineOptions} label="Компьютер с папкой" onpick={(v) => ((pickMachine = v), (picking = 'edit'))} />{/if}
+              <button class="btn" onclick={() => ((pickMachine = d!.project.node_id ?? ''), (picking = 'edit'))}><Icon name="folder" size={14} />Выбрать…</button>
+              {#if d.project.root_path}<button class="btn" onclick={() => save({ root_path: '', node_id: '' })}>Отвязать</button>{/if}</div>
+            <p class="faint" style="font-size:12px;margin:0">Специалисты работают над проектом на том компьютере, где лежит папка: там его файлы, сервер разработки и инструменты.</p>
             <label>Компания
               <Dropdown block value={d.project.company_id ?? ''} options={[{ id: '', label: 'Без компании' }, ...app.companies.map((c) => ({ id: c.id, label: c.name }))]} label="Компания" onpick={(v) => save({ company_id: v })} /></label>
             <label>Режим по умолчанию

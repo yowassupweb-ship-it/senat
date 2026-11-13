@@ -87,8 +87,18 @@ fn key_for_minutes(minutes: f64) -> &'static str {
 /// timeUnit}, detail: {limit, used | remaining, resetTime}}` (the five-hour one among them).
 pub(crate) fn parse_kimi(v: &Value) -> Map<String, Value> {
     let mut m = Map::new();
+    // The current answer: `usages.limit_5h` and `usages.limit_month_total`, each `{used_ratio: 0..1, reset_time}`.
+    for (src, key) in [("limit_5h", "five_hour"), ("limit_month_total", "month")] {
+        let u = &v["usages"][src];
+        if let Some(r) = u["used_ratio"].as_f64() {
+            m.insert(key.into(), window(r * 100.0, epoch(&u["reset_time"])));
+        }
+    }
+    if m.contains_key("month") && m.contains_key("five_hour") {
+        return m;
+    }
     if let Some((u, r)) = kimi_detail(&v["usage"]) {
-        m.insert("month".into(), window(u, r));
+        m.entry("month".to_string()).or_insert(window(u, r));
     }
     for l in v["limits"].as_array().into_iter().flatten() {
         let d = if l["detail"].is_object() { &l["detail"] } else { l };
@@ -199,5 +209,14 @@ mod tests {
         assert_eq!(k["month"]["used"], 25.0);
         assert_eq!(k["five_hour"]["used"], 20.0);
         assert!(parse_kimi(&json!({"odd": 1})).is_empty());
+
+        // what Kimi Code answers now (November 2026): ratios under `usages`
+        let k2 = parse_kimi(&json!({
+            "limits": [{"window": {"duration": 300, "timeUnit": "TIME_UNIT_MINUTE"}, "detail": {"limit": "100", "remaining": "100", "resetTime": "2026-11-13T13:12:35Z"}}],
+            "usages": {"limit_5h": {"used_ratio": 0.0027, "reset_time": "2026-11-13T13:12:34Z"}, "limit_month_total": {"used_ratio": 0.0313, "reset_time": "2026-12-13T00:00:00Z"}, "limit_month_code": {"used_ratio": 0.0072, "reset_time": "2026-12-13T00:00:00Z"}}
+        }));
+        assert_eq!(k2["five_hour"]["used"], 0.0);
+        assert_eq!(k2["month"]["used"], 3.0);
+        assert!(k2["month"]["resets_at"].as_i64().unwrap() > k2["five_hour"]["resets_at"].as_i64().unwrap());
     }
 }

@@ -212,9 +212,17 @@ pub(crate) async fn execute(app: Arc<App>, s: Session) {
 
     let is_chat = s.obligation_id.is_none();
     let provider = s.backend.split(':').next().unwrap_or("").to_string();
-    // A specialist who works on a person's computer keeps CLI sessions there: they are not the node's sessions.
-    let local = store.setting(&format!("exec:{}", agent.id)).ok().flatten().as_deref() == Some("local");
-    let session_key = if local { format!("{provider}@local") } else { provider.clone() };
+    // Where the turn runs. A project whose folder is on one of the person's computers is worked on there, by whoever
+    // works on it: the folder, the dev server and the tools are there. Otherwise a specialist set to "local" works
+    // on the computer connected last, and everyone else on the node.
+    let project_machine = project.as_ref().filter(|p| !p.root_path.is_empty()).and_then(|p| p.node_id.clone()).filter(|m| !m.is_empty() && *m != app.machine_id);
+    let local = project_machine.is_some() || store.setting(&format!("exec:{}", agent.id)).ok().flatten().as_deref() == Some("local");
+    // CLI sessions live on the computer that ran them: a session from one computer means nothing on another.
+    let session_key = match (&project_machine, local) {
+        (Some(m), _) => format!("{provider}@{m}"),
+        (None, true) => format!("{provider}@local"),
+        _ => provider.clone(),
+    };
     let is_forum_thread = thread.as_ref().map(|t| t.kind == ThreadKind::Forum).unwrap_or(false);
     // One CLI session per specialist in a chat, not per chat: two specialists sharing one would resume the same
     // session (a CLI lets only one process write to it) and would wear each other's identity and history.
@@ -223,6 +231,14 @@ pub(crate) async fn execute(app: Arc<App>, s: Session) {
     let company_id = thread.as_ref().and_then(|t| t.company_id.clone()).or_else(|| project.as_ref().and_then(|p| p.company_id.clone()));
     let mut system_prompt = senate_core::workset::system_prompt(store, &agent, project.as_ref(), company_id.as_deref()).unwrap_or_default();
     system_prompt += &crate::skills::block_for(&app.cfg.data_dir, &agent.slug);
+    if !local {
+        // on a computer its app adds this itself; on the node, the node does
+        let env = tokio::task::spawn_blocking(crate::workspace::environment).await.unwrap_or_default();
+        system_prompt += &crate::workspace::environment_block("сервер (нода Senate)", &cwd, &env);
+        if app.cfg.bind.ip().is_unspecified() {
+            system_prompt += "Это сервер, а не компьютер человека: его localhost человеку напрямую не открыть. Запустил страницу или dev-сервер — покажи через `senate_preview` (http://localhost:ПОРТ): кнопка откроет её у человека через Senate. Не проси человека открыть localhost и не говори, что он «на сервере недоступен». Папки коллег рядом с твоей: ../<username>.\n";
+        }
+    }
 
     let token = format!("sst_{}", uuid::Uuid::new_v4().simple());
     app.session_tokens.lock().unwrap().insert(
@@ -235,6 +251,8 @@ pub(crate) async fn execute(app: Arc<App>, s: Session) {
             thread_id: s.thread_id.clone(),
             project_id: project.as_ref().map(|p| p.id.clone()),
             company_id: company_id.clone(),
+            // a node that serves other machines (bound to all interfaces: the server) is not the person's computer
+            on_node: !local && app.cfg.bind.ip().is_unspecified(),
         },
     );
     let mcp_bin = std::env::var_os("SENATE_MCP_BIN").map(std::path::PathBuf::from).or_else(|| std::env::current_exe().ok());
@@ -265,7 +283,16 @@ pub(crate) async fn execute(app: Arc<App>, s: Session) {
         resume,
         mcp,
         // The specialist's own equipment: only the MCP servers assigned to them (or shared).
-        extra_mcp: store.mcp_for_agent(&agent.id).unwrap_or_default().iter().map(ExtraMcp::from).collect(),
+        // On the node, servers set up for the person's computer (a Windows path) are left out; on a computer, its
+        // app leaves out the node's own (`runner::usable_here` either way).
+        extra_mcp: store.mcp_for_agent(&agent.id).unwrap_or_default().iter().map(ExtraMcp::from).filter(|m| local || crate::runner::usable_here(m))
+            .map(|mut m| {
+                if !local {
+                    m.args = m.args.iter().map(|a| a.replace("{slug}", &agent.slug)).collect();
+                }
+                m
+            })
+            .collect(),
         extra_dirs: crate::permissions::allowed_dirs(&store.list_permission_rules().unwrap_or_default()),
         env: vec![],
         bare: false,
@@ -321,7 +348,11 @@ pub(crate) async fn execute(app: Arc<App>, s: Session) {
         })
     };
 
-    let outcome = if local { crate::runner::remote_run(&app, spec, &agent.slug, &approver, tx, cancel_rx).await } else { senate_runtime::run(spec, &approver, tx, cancel_rx).await };
+    let outcome = if local {
+        crate::runner::remote_run(&app, spec, &agent.slug, project_machine.as_deref(), &approver, tx, cancel_rx).await
+    } else {
+        senate_runtime::run(spec, &approver, tx, cancel_rx).await
+    };
     let sid = consumer.await.ok().flatten();
 
     // ---- finalize ----

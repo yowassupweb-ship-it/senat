@@ -10,6 +10,7 @@
   import Icon from '../components/Icon.svelte';
   import Page from '../components/Page.svelte';
   import StatusPanel from '../components/StatusPanel.svelte';
+  import MachinesBlock from '../components/MachinesBlock.svelte';
 
   let nodes = $state<SavedNode[]>(savedNodes());
   let reach = $state<Record<string, Reach | 'wait'>>({});
@@ -205,6 +206,7 @@
 <Page title="Настройки">
   {#if error}<div class="notice bad" role="alert">{error}</div>{/if}
   <StatusPanel />
+  <MachinesBlock />
   {#if s}
     <section class="block">
       <h2>Агенты</h2>

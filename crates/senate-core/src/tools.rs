@@ -18,6 +18,9 @@ pub struct ToolCtx {
     pub thread_id: Option<String>,
     pub project_id: Option<String>,
     pub company_id: Option<String>,
+    /// The run is on the node (a server), not on the person's computer: a `localhost` it starts is the server's,
+    /// and the person reaches it through the node (`/preview/<port>/`), not on their own machine.
+    pub on_node: bool,
 }
 
 pub struct ToolDef {
@@ -697,8 +700,11 @@ fn call_inner(store: &Store, ctx: &ToolCtx, name: &str, a: &Value, bypass: bool)
                 .ok_or_else(|| Error::invalid("разрешены только адреса этого компьютера: http://localhost:PORT, http://127.0.0.1:PORT или http://[::1]:PORT"))?;
             let label: String = s(a, "label").chars().filter(|c| !c.is_control()).take(40).collect();
             let label = if label.trim().is_empty() { default_label } else { label.trim().to_string() };
-            store.set_forum_meta(&tid, &json!({"preview": {"url": url, "label": label}}))?;
-            Ok(json!({"status": "set", "url": url, "note": "кнопка появилась под полем ввода"}))
+            // where the dev server runs decides how the person reaches it
+            let on = if ctx.on_node { "node" } else { "machine" };
+            store.set_forum_meta(&tid, &json!({"preview": {"url": url, "label": label, "on": on}}))?;
+            let note = if ctx.on_node { "кнопка появилась под полем ввода; ты на сервере, человек откроет страницу через Senate (без доступа к его localhost)" } else { "кнопка появилась под полем ввода" };
+            Ok(json!({"status": "set", "url": url, "note": note}))
         }
         other => Err(Error::invalid(format!("неизвестный инструмент {other}"))),
     }

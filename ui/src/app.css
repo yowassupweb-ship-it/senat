@@ -196,6 +196,7 @@ button:active:not(:disabled) { filter: brightness(.94); }
 input::placeholder, textarea::placeholder { color: var(--fg-3); opacity: 1; }
 input, textarea, select { min-width: 0; }
 .icon-btn:disabled { opacity: .45; }
+.icon-btn[aria-pressed='true'] { background: var(--bg-active); color: var(--fg); }
 .field:disabled { opacity: .6; background: var(--bg-sunken); }
 .field[aria-invalid='true'] { border-color: var(--bad); }
 .btn.danger { background: var(--bad-soft); }

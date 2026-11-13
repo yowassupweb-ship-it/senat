@@ -1,6 +1,6 @@
 //! HTTP API of the node. Everything the UI (desktop or browser) does goes through here.
 
-use crate::{accounts, executor, external, forum, project_git, skills, uploads, App};
+use crate::{accounts, executor, external, forum, skills, uploads, App};
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, Path, Query, Request, State};
 use axum::http::{header, HeaderMap, StatusCode};
@@ -19,6 +19,7 @@ use senate_runtime::Decision;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio_stream::wrappers::BroadcastStream;
 
 type S = State<Arc<App>>;
@@ -114,6 +115,13 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/runner/job/:id/event", post(runner_event))
         .route("/api/runner/job/:id/ask", post(runner_ask))
         .route("/api/runner/skills", get(runner_skills))
+        .route("/api/runner/rpc/:id", post(runner_rpc))
+        .route("/api/runner/workspaces", get(ws_manifest))
+        .route("/api/runner/workspaces/file", get(ws_get).put(ws_put).layer(DefaultBodyLimit::max(25 << 20)))
+        .route("/api/machines", get(machines))
+        .route("/api/projects/:id/tree", get(project_tree))
+        .route("/api/projects/:id/file", get(project_file))
+        .route("/api/projects/:id/open", post(project_open))
         .route("/api/cloud", get(cloud_list).delete(cloud_delete))
         .route("/api/cloud/config", get(cloud_config).put(cloud_config_put))
         .route("/api/cloud/upload", post(cloud_upload).layer(DefaultBodyLimit::max(120 * 1024 * 1024)))
@@ -172,7 +180,12 @@ pub fn router(app: Arc<App>) -> Router {
         // agent tools bridge (session token)
         .route("/api/agent/call", post(agent_call))
         .route("/mcp", post(crate::mcp_http::post_root).get(crate::mcp_http::get_not_allowed))
-        .route("/mcp/:token", post(crate::mcp_http::post_token).get(crate::mcp_http::get_not_allowed));
+        .route("/mcp/:token", post(crate::mcp_http::post_token).get(crate::mcp_http::get_not_allowed))
+        // a page a specialist started on the server, passed through for the person (preview.rs)
+        .route("/api/preview/:port", get(preview_link))
+        .route("/preview/:port", axum::routing::any(crate::preview::handle))
+        .route("/preview/:port/", axum::routing::any(crate::preview::handle))
+        .route("/preview/:port/*rest", axum::routing::any(crate::preview::handle));
 
     api.fallback(static_ui)
         .layer(middleware::from_fn_with_state(app.clone(), auth))
@@ -663,8 +676,16 @@ async fn project_detail(State(a): S, Path(id): Path<String>) -> R {
 async fn patch_project(State(a): S, Path(id): Path<String>, Json(b): Json<Value>) -> R {
     let p: ProjectPatch = de(b)?;
     if let Some(r) = &p.root_path {
-        if !r.is_empty() && !std::path::Path::new(r).is_dir() {
-            return Err(bad("такой папки нет"));
+        if !r.is_empty() {
+            // the folder is checked on the computer it is on
+            let machine = match &p.node_id {
+                Some(m) => m.clone(),
+                None => a.store.get_project(&id)?.node_id.unwrap_or_default(),
+            };
+            let v = on_machine(&a, &machine, "is_dir", json!({"path": r})).await?;
+            if v["is_dir"] != true {
+                return Err(bad("такой папки нет на этом компьютере"));
+            }
         }
     }
     let p = a.store.update_project(&id, p)?;
@@ -688,14 +709,6 @@ async fn decision_status(State(a): S, Path(id): Path<String>, Json(b): Json<Valu
     ok(a.store.set_decision_status(&id, st, "user")?)
 }
 
-fn project_root(a: &App, id: &str) -> Result<std::path::PathBuf, ApiError> {
-    let p = a.store.get_project(id)?;
-    if p.root_path.is_empty() {
-        return Err(bad("у проекта нет рабочей папки"));
-    }
-    Ok(std::path::PathBuf::from(p.root_path))
-}
-
 /// The folder a chat works in: its project's folder, or the private workspace of the specialist who answers it.
 fn thread_root(a: &App, id: &str) -> Option<std::path::PathBuf> {
     let t = a.store.get_thread(id).ok()?;
@@ -714,43 +727,53 @@ fn thread_root(a: &App, id: &str) -> Option<std::path::PathBuf> {
     dir.is_dir().then_some(dir)
 }
 
+/// The folder a chat works in and the computer it is on ("" = this node).
+fn thread_place(a: &App, id: &str) -> Option<(String, String)> {
+    let t = a.store.get_thread(id).ok()?;
+    if let Some(p) = t.project_id.as_ref().and_then(|pid| a.store.get_project(pid).ok()).filter(|p| !p.root_path.is_empty()) {
+        return Some((p.root_path, p.node_id.unwrap_or_default()));
+    }
+    thread_root(a, id).map(|r| (r.to_string_lossy().into_owned(), String::new()))
+}
+
+fn safe_rel(p: &str) -> Result<(), ApiError> {
+    // never let a diff request leave the folder
+    if p.contains("..") || std::path::Path::new(p).is_absolute() {
+        return Err(bad("недопустимый путь"));
+    }
+    Ok(())
+}
+
+/// git on the computer that has the folder; when that computer is away, say so instead of failing.
+async fn git_on(a: &Arc<App>, root: String, machine: String) -> R {
+    match on_machine(a, &machine, "git_status", json!({"root": root})).await {
+        Ok(v) => ok(v),
+        Err(ApiError(_, why)) => ok(json!({"available": false, "reason": why})),
+    }
+}
+
 async fn thread_git_status(State(a): S, Path(id): Path<String>) -> R {
-    let Some(root) = thread_root(&a, &id) else { return ok(json!({"available": false, "reason": "у чата нет рабочей папки"})) };
-    ok(tokio::task::spawn_blocking(move || project_git::status(&root)).await.unwrap_or(Value::Null))
+    let Some((root, machine)) = thread_place(&a, &id) else { return ok(json!({"available": false, "reason": "у чата нет рабочей папки"})) };
+    git_on(&a, root, machine).await
 }
 
 async fn thread_diff(State(a): S, Path(id): Path<String>, Query(q): Query<HashMap<String, String>>) -> R {
-    let root = thread_root(&a, &id).ok_or_else(|| bad("у чата нет рабочей папки"))?;
-    let path = q.get("path").cloned();
-    if let Some(p) = &path {
-        if p.contains("..") || std::path::Path::new(p).is_absolute() {
-            return Err(bad("недопустимый путь"));
-        }
-    }
-    let d = tokio::task::spawn_blocking(move || project_git::diff(&root, path.as_deref())).await.unwrap_or_default();
-    ok(json!({"diff": d}))
+    let (root, machine) = thread_place(&a, &id).ok_or_else(|| bad("у чата нет рабочей папки"))?;
+    let path = q.get("path").cloned().unwrap_or_default();
+    safe_rel(&path)?;
+    ok(on_machine(&a, &machine, "git_diff", json!({"root": root, "path": path})).await?)
 }
 
 async fn project_git_status(State(a): S, Path(id): Path<String>) -> R {
-    let root = match project_root(&a, &id) {
-        Ok(r) => r,
-        Err(_) => return ok(json!({"available": false, "reason": "у проекта нет рабочей папки"})),
-    };
-    let v = tokio::task::spawn_blocking(move || project_git::status(&root)).await.unwrap_or(Value::Null);
-    ok(v)
+    let Ok((root, machine)) = project_place(&a, &id) else { return ok(json!({"available": false, "reason": "у проекта нет рабочей папки"})) };
+    git_on(&a, root, machine).await
 }
 
 async fn project_diff(State(a): S, Path(id): Path<String>, Query(q): Query<HashMap<String, String>>) -> R {
-    let root = project_root(&a, &id)?;
-    let path = q.get("path").cloned();
-    if let Some(p) = &path {
-        // never let a diff request leave the project folder
-        if p.contains("..") || std::path::Path::new(p).is_absolute() {
-            return Err(bad("недопустимый путь"));
-        }
-    }
-    let d = tokio::task::spawn_blocking(move || project_git::diff(&root, path.as_deref())).await.unwrap_or_default();
-    ok(json!({"diff": d}))
+    let (root, machine) = project_place(&a, &id)?;
+    let path = q.get("path").cloned().unwrap_or_default();
+    safe_rel(&path)?;
+    ok(on_machine(&a, &machine, "git_diff", json!({"root": root, "path": path})).await?)
 }
 
 // ---------------- where specialists work ----------------
@@ -776,8 +799,22 @@ async fn exec_modes_put(State(a): S, Json(b): Json<Value>) -> R {
     exec_modes(State(a)).await
 }
 
-async fn runner_poll(State(a): S) -> R {
-    let job = a.runner.poll().await;
+async fn runner_poll(State(a): S, body: Option<Json<Value>>) -> R {
+    let m = body.map(|Json(b)| b["machine"].clone()).unwrap_or(Value::Null);
+    // an app from before computers had names counts as one unnamed computer
+    let id = m["id"].as_str().filter(|s| !s.is_empty()).unwrap_or("m_unnamed").to_string();
+    if m.is_object() {
+        let first = !a.runner.machine_online(&id);
+        let _ = a.store.upsert_node(&id, m["name"].as_str().unwrap_or("Компьютер"), m["os"].as_str().unwrap_or(""), "machine", "", &m["env"]);
+        if first {
+            a.publish("machines", json!({}));
+        }
+    }
+    a.runner.mark(&id);
+    if m.is_object() {
+        match_projects(&a, id.clone());
+    }
+    let job = a.runner.poll(&id).await;
     ok(json!({"job": job}))
 }
 
@@ -1068,41 +1105,128 @@ async fn journal(State(a): S, Query(q): Query<HashMap<String, String>>) -> R {
     ok(a.store.events(q.get("type").map(|s| s.as_str()), q.get("id").map(|s| s.as_str()), 100)?)
 }
 
-/// Folder picker backing: lists sub-folders only.
-async fn fs_list(Query(q): Query<HashMap<String, String>>) -> R {
+/// Folder picker backing: lists sub-folders only — on the node, or on one of the person's computers (`machine`).
+async fn fs_list(State(a): S, Query(q): Query<HashMap<String, String>>) -> R {
     let path = q.get("path").cloned().unwrap_or_default();
-    if path.is_empty() {
-        let mut roots: Vec<Value> = vec![];
-        #[cfg(windows)]
-        for l in b'A'..=b'Z' {
-            let p = format!("{}:\\", l as char);
-            if std::path::Path::new(&p).exists() {
-                roots.push(json!({"name": p, "path": p}));
-            }
-        }
-        if let Some(h) = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")) {
-            let h = std::path::PathBuf::from(h);
-            roots.insert(0, json!({"name": "Домашняя папка", "path": h.to_string_lossy()}));
-        }
-        #[cfg(not(windows))]
-        roots.push(json!({"name": "/", "path": "/"}));
-        return ok(json!({"path": "", "parent": null, "entries": roots}));
+    let machine = q.get("machine").cloned().unwrap_or_default();
+    let v = on_machine(&a, &machine, "dirs", json!({"path": path})).await?;
+    if let Some(e) = v["error"].as_str() {
+        return Err(bad(&format!("не открыть: {e}")));
     }
-    let p = std::path::PathBuf::from(&path);
-    let rd = std::fs::read_dir(&p).map_err(|e| bad(&format!("не открыть: {e}")))?;
-    let mut entries: Vec<Value> = rd
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
-        .filter_map(|e| {
-            let name = e.file_name().to_string_lossy().into_owned();
-            if name.starts_with('.') || name == "node_modules" || name == "$RECYCLE.BIN" || name == "System Volume Information" {
-                return None;
-            }
-            Some(json!({"name": name, "path": e.path().to_string_lossy(), "git": e.path().join(".git").exists()}))
-        })
+    ok(v)
+}
+
+/// One `workspace::op` on the computer that has the folder: here, or there through its app.
+async fn on_machine(a: &Arc<App>, machine: &str, op: &str, args: Value) -> Result<Value, ApiError> {
+    if machine.is_empty() || machine == a.machine_id {
+        let op = op.to_string();
+        return tokio::task::spawn_blocking(move || crate::workspace::op(&op, &args)).await.map_err(|_| bad("сбой"))?.map_err(|e| bad(&e));
+    }
+    let limit = if op == "git_status" || op == "git_diff" { Duration::from_secs(40) } else { Duration::from_secs(20) };
+    a.runner.rpc(machine, op, args, limit).await.map_err(|e| ApiError(StatusCode::SERVICE_UNAVAILABLE, e))
+}
+
+/// A project's folder and the computer it is on.
+fn project_place(a: &App, id: &str) -> Result<(String, String), ApiError> {
+    let p = a.store.get_project(id)?;
+    if p.root_path.is_empty() {
+        return Err(bad("у проекта нет рабочей папки"));
+    }
+    Ok((p.root_path, p.node_id.unwrap_or_default()))
+}
+
+async fn project_tree(State(a): S, Path(id): Path<String>, Query(q): Query<HashMap<String, String>>) -> R {
+    let (root, machine) = project_place(&a, &id)?;
+    ok(on_machine(&a, &machine, "tree", json!({"root": root, "path": q.get("path").cloned().unwrap_or_default()})).await?)
+}
+
+async fn project_file(State(a): S, Path(id): Path<String>, Query(q): Query<HashMap<String, String>>) -> R {
+    let (root, machine) = project_place(&a, &id)?;
+    ok(on_machine(&a, &machine, "read", json!({"root": root, "path": q.get("path").cloned().unwrap_or_default()})).await?)
+}
+
+async fn project_open(State(a): S, Path(id): Path<String>, Json(b): Json<Value>) -> R {
+    let (root, machine) = project_place(&a, &id)?;
+    ok(on_machine(&a, &machine, "open", json!({"root": root, "path": b["path"].as_str().unwrap_or("")})).await?)
+}
+
+/// The person's computers: name, system, tools, whether the app is connected now.
+async fn machines(State(a): S) -> R {
+    let list: Vec<Value> = a
+        .store
+        .list_nodes()?
+        .into_iter()
+        .filter(|n| n.kind == "machine")
+        .map(|n| json!({"id": n.id, "name": n.name, "os": n.os, "env": n.capabilities, "last_seen": n.last_seen, "online": a.runner.machine_online(&n.id), "this_node": n.id == a.machine_id}))
         .collect();
-    entries.sort_by(|a, b| a["name"].as_str().unwrap_or("").to_lowercase().cmp(&b["name"].as_str().unwrap_or("").to_lowercase()));
-    ok(json!({"path": path, "parent": p.parent().map(|x| x.to_string_lossy().into_owned()), "entries": entries, "git": p.join(".git").exists()}))
+    ok(json!({"machines": list, "node_machine": a.machine_id}))
+}
+
+// ---- private workspaces follow the specialist between the node and the person's computers (workspace.rs)
+
+async fn ws_manifest(State(a): S) -> R {
+    let root = a.cfg.data_dir.join("workspaces");
+    ok(json!({"files": tokio::task::spawn_blocking(move || crate::workspace::manifest(&root)).await.unwrap_or_default()}))
+}
+
+async fn ws_get(State(a): S, Query(q): Query<HashMap<String, String>>) -> Response {
+    let root = a.cfg.data_dir.join("workspaces");
+    let Some(p) = crate::workspace::sync_path(&root, q.get("path").map(String::as_str).unwrap_or("")) else { return bad("недопустимый путь").into_response() };
+    match tokio::fs::read(&p).await {
+        Ok(b) => ([(header::CONTENT_TYPE, "application/octet-stream")], b).into_response(),
+        Err(_) => ApiError(StatusCode::NOT_FOUND, "нет файла".into()).into_response(),
+    }
+}
+
+/// A file a specialist changed on a computer, back into their own folder on the node (only their own).
+async fn ws_put(State(a): S, Query(q): Query<HashMap<String, String>>, body: Bytes) -> R {
+    let rel = q.get("path").cloned().unwrap_or_default();
+    let slug = q.get("slug").cloned().unwrap_or_default();
+    if slug.is_empty() || !rel.starts_with(&format!("{slug}/")) {
+        return Err(bad("писать можно только в свою папку"));
+    }
+    let root = a.cfg.data_dir.join("workspaces");
+    let p = crate::workspace::sync_path(&root, &rel).ok_or_else(|| bad("недопустимый путь"))?;
+    let mtime: i64 = q.get("mtime").and_then(|m| m.parse().ok()).unwrap_or(0);
+    tokio::task::spawn_blocking(move || crate::workspace::write_synced(&p, &body, mtime)).await.map_err(|_| bad("сбой"))?.map_err(|e| bad(&e.to_string()))?;
+    ok(json!({"ok": true}))
+}
+
+/// A link to a page running on this node's own localhost, for the person to open (see preview.rs).
+async fn preview_link(State(a): S, Path(port): Path<u16>, Query(q): Query<HashMap<String, String>>) -> R {
+    let path = q.get("path").cloned().unwrap_or_default();
+    let url = crate::preview::link(&a, port, &path).ok_or_else(|| bad("недопустимый порт"))?;
+    ok(json!({"url": url}))
+}
+
+async fn runner_rpc(State(a): S, Path(id): Path<String>, Json(b): Json<Value>) -> R {
+    let r = if b["ok"] == true { Ok(b["result"].clone()) } else { Err(b["error"].as_str().unwrap_or("ошибка").to_string()) };
+    a.runner.rpc_done(&id, r);
+    ok(json!({"ok": true}))
+}
+
+/// A computer that connects for the first time is asked which project folders it has: projects that name no
+/// computer and whose folder is not on the node get it, so a folder chosen before computers had names finds its home.
+fn match_projects(a: &Arc<App>, machine: String) {
+    if !a.matched.lock().unwrap().insert(machine.clone()) {
+        return;
+    }
+    let a = a.clone();
+    tokio::spawn(async move {
+        let Ok(projects) = a.store.list_projects() else { return };
+        let mut changed = false;
+        for p in projects.into_iter().filter(|p| !p.root_path.is_empty() && p.node_id.is_none() && !std::path::Path::new(&p.root_path).is_dir()) {
+            if let Ok(v) = a.runner.rpc(&machine, "is_dir", json!({"path": p.root_path}), Duration::from_secs(20)).await {
+                if v["is_dir"] == true {
+                    let _ = a.store.update_project(&p.id, senate_core::store::ProjectPatch { node_id: Some(machine.clone()), ..Default::default() });
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            a.publish("projects", json!({}));
+        }
+    });
 }
 
 // ---------------- agent tools bridge ----------------

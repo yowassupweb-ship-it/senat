@@ -130,7 +130,8 @@ export interface ForumMeta {
   plan?: any;
   plan_applied?: boolean;
   /** Set by the specialist (`senate_preview`): the person's local dev server, shown as a button under the composer. */
-  preview?: { url: string; label: string };
+  /** `on: 'node'` — the dev server runs on the server: opened through the node, not on this computer. */
+  preview?: { url: string; label: string; on?: 'node' | 'machine' };
   /** The person stopped the work because they disagree with the plan; their next message is the objection. */
   plan_hold?: { todos: { content: string; status: string }[]; at: number };
 }
@@ -144,9 +145,32 @@ export interface Project {
   constraints: string;
   status: string;
   root_path: string;
+  /** The computer the folder is on; null: the node itself. */
+  node_id?: string | null;
   mode: string;
   open_obligations?: number;
   members?: Agent[];
+}
+
+/** One of the person's computers that runs the Senate app. */
+export interface Machine {
+  id: string;
+  name: string;
+  os: string;
+  online: boolean;
+  env: { tools?: Record<string, string>; missing?: string[]; os?: string } | null;
+  last_seen: number | null;
+  this_node?: boolean;
+}
+
+/** One entry of a project folder. */
+export interface TreeEntry {
+  name: string;
+  path: string;
+  dir: boolean;
+  size: number;
+  heavy: boolean;
+  hidden: boolean;
 }
 
 export type Mode = 'plan' | 'ask' | 'edit' | 'auto';

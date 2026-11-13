@@ -3,7 +3,8 @@
   import { get } from '../lib/api';
   import Icon from './Icon.svelte';
 
-  let { start = '', onpick, onclose }: { start?: string; onpick: (path: string) => void; onclose: () => void } = $props();
+  // `machine`: the computer whose folders are shown ("" = the node itself).
+  let { start = '', machine = '', where = '', onpick, onclose }: { start?: string; machine?: string; where?: string; onpick: (path: string) => void; onclose: () => void } = $props();
 
   let path = $state('');
   let entries = $state<{ name: string; path: string; git?: boolean }[]>([]);
@@ -13,17 +14,21 @@
 
   async function load(p: string) {
     try {
-      const r = await get(`/api/fs/list?path=${encodeURIComponent(p)}`);
+      const r = await get(`/api/fs/list?path=${encodeURIComponent(p)}${machine ? `&machine=${encodeURIComponent(machine)}` : ''}`);
       path = r.path;
       entries = r.entries;
       parent = r.parent;
       isGit = !!r.git;
       error = '';
     } catch (e: any) {
+      // the starting folder is not on this computer: show its drives instead of a dead end
+      if (p && p === start) return load('');
       error = e.message;
     }
   }
   $effect(() => {
+    machine;
+    // a folder from another computer means nothing here: start from the top
     load(start);
   });
 </script>
@@ -32,7 +37,7 @@
 <div class="scrim" onclick={onclose}>
   <div class="dlg" use:focusScope={onclose} role="dialog" tabindex="-1" aria-modal="true" aria-label="Выбор папки" onclick={(e) => e.stopPropagation()}>
     <header>
-      <b>Выберите рабочую папку</b>
+      <b>Выберите рабочую папку{#if where} · {where}{/if}</b>
       <button class="icon-btn" onclick={onclose} aria-label="Закрыть"><Icon name="x" size={15} /></button>
     </header>
     <div class="cur mono" title={path}>{path || 'Расположения'}</div>
