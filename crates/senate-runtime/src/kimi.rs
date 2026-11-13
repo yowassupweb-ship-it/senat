@@ -147,9 +147,39 @@ fn pick(options: &[Value], allow: bool) -> Value {
     }
 }
 
+/// The folder Kimi recorded for a session (`session_index.jsonl` in its home), if it knows the session.
+fn session_workdir(session_id: &str) -> Option<std::path::PathBuf> {
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(std::path::PathBuf::from)?;
+    for dir in [".kimi-code", ".kimi"] {
+        let Ok(text) = std::fs::read_to_string(home.join(dir).join("session_index.jsonl")) else { continue };
+        for line in text.lines().rev() {
+            let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+            if v["sessionId"].as_str() == Some(session_id) {
+                return v["workDir"].as_str().map(std::path::PathBuf::from);
+            }
+        }
+    }
+    None
+}
+
+/// Kimi continues a session in the folder it was started in, whatever `cwd` it is given. When that folder is gone
+/// or is not this run's (the specialist's username — and so their folder — was changed, or the project moved), the
+/// session cannot be continued: every tool would start in a folder that does not exist ("Internal error").
+pub(crate) fn resume_is_stale(recorded: Option<&std::path::Path>, cwd: &std::path::Path) -> bool {
+    let Some(w) = recorded else { return false };
+    let same = std::fs::canonicalize(w).ok().zip(std::fs::canonicalize(cwd).ok()).map(|(a, b)| a == b).unwrap_or(false);
+    !same
+}
+
 pub async fn run(spec: RunSpec, approver: &dyn Approver, tx: EventTx, mut cancel: CancelRx) -> Outcome {
     if !spec.cwd.is_dir() {
         return Outcome { failure: Some(format!("Рабочая папка недоступна: {}", spec.cwd.display())), ..Default::default() };
+    }
+    if let Some(r) = &spec.resume {
+        if resume_is_stale(session_workdir(r).as_deref(), &spec.cwd) {
+            // the caller reads this marker and runs the turn in a fresh session, with the role in it
+            return Outcome { failure: Some("session not found: its folder moved".into()), ..Default::default() };
+        }
     }
     let Some(cmd) = command(&spec.cwd) else {
         return Outcome { failure: Some("Kimi Code не найден на этой машине. Установите: npm i -g @moonshot-ai/kimi-code, затем войдите в Настройках.".into()), ..Default::default() };
@@ -391,4 +421,26 @@ fn tool_identity(u: &Value) -> (String, Value) {
         _ => name,
     };
     (name, input)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_session_from_another_folder_is_not_continued() {
+        let base = std::env::temp_dir().join(format!("senate-kimi-wd-{}", std::process::id()));
+        let now = base.join("assist");
+        std::fs::create_dir_all(&now).unwrap();
+        // the folder the session was started in is gone (username changed): start fresh
+        assert!(resume_is_stale(Some(&base.join("assistent")), &now));
+        // same folder, even spelled differently: continue
+        assert!(!resume_is_stale(Some(&now.join(".")), &now));
+        // a session Kimi has no record of: let Kimi decide
+        assert!(!resume_is_stale(None, &now));
+        // and the marker is the one the caller turns into a fresh session
+        let o = crate::Outcome { failure: Some("session not found: its folder moved".into()), ..Default::default() };
+        assert!(crate::session_is_lost(&o));
+        let _ = std::fs::remove_dir_all(&base);
+    }
 }
