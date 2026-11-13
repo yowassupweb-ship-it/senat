@@ -244,7 +244,7 @@ pub(crate) fn environment() -> Value {
                     None => missing.push(*name),
                 }
             }
-            json!({"os": std::env::consts::OS, "shell": if cfg!(windows) { "PowerShell" } else { "bash" }, "tools": have, "missing": missing})
+            json!({"os": std::env::consts::OS, "shell": if cfg!(windows) { "Git Bash у Claude и Kimi, PowerShell у Codex" } else { "bash" }, "tools": have, "missing": missing})
         })
         .clone()
 }
