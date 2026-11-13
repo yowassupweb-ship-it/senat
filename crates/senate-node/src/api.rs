@@ -498,20 +498,19 @@ async fn answer(State(a): S, Path(id): Path<String>, Json(b): Json<Value>) -> R 
     let note = b["note"].as_str().unwrap_or("").to_string();
     let pending = a.pending.lock().unwrap().remove(&id);
     let Some(p) = pending else { return Err(ApiError(StatusCode::CONFLICT, "вопрос уже закрыт".into())) };
-    // "Allow always": remember what the card said it would remember — never more, and never for a refusal.
-    if allow && b["always"] == true {
-        if let Some(c) = &p.rule {
-            a.store.add_permission_rule(c.kind, &c.value, &c.label)?;
-        }
-    }
-    // "Allow work in this folder": files and commands there, from now on (Settings → Разрешения to take it back).
-    if allow && b["scope"] == "dir" {
-        if let Some(c) = &p.dir {
-            a.store.add_permission_rule(c.kind, &c.value, &c.label)?;
-        }
-    }
+    // The answer reaches the specialist first, whatever happens to remembering it: a rule that cannot be stored must
+    // not leave them waiting on a question the person already answered.
     let _ = p.tx.send(if allow { Decision::Allow } else { Decision::Deny(note) });
-    ok(json!({"ok": true, "tool_use_id": p.tool_use_id}))
+    let mut remembered: Option<String> = None;
+    // "Allow always": remember what the card said it would remember — never more, and never for a refusal.
+    // "Allow work in this folder": files and commands there, from now on (Settings → Разрешения to take it back).
+    let rule = if allow && b["always"] == true { p.rule.as_ref() } else if allow && b["scope"] == "dir" { p.dir.as_ref() } else { None };
+    if let Some(c) = rule {
+        if let Err(e) = a.store.add_permission_rule(c.kind, &c.value, &c.label) {
+            remembered = Some(format!("разрешено сейчас, но запомнить не удалось: {e}"));
+        }
+    }
+    ok(json!({"ok": true, "tool_use_id": p.tool_use_id, "warning": remembered}))
 }
 
 /// "Запомнить главное": run reflection on an answer now (also for conversations that happened before).

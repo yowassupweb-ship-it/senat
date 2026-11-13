@@ -1760,7 +1760,7 @@ impl Store {
 
     /// Remember a rule; asking for the same one twice is not an error.
     pub fn add_permission_rule(&self, kind: &str, value: &str, label: &str) -> Result<PermissionRule> {
-        if !["path", "cmd", "tool"].contains(&kind) || value.trim().is_empty() {
+        if !["path", "cmd", "tool", "dir"].contains(&kind) || value.trim().is_empty() {
             return Err(Error::invalid("неизвестное правило разрешений"));
         }
         let c = self.lock();

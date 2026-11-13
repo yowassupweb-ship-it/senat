@@ -960,3 +960,12 @@ fn compact_all_compacts_only_those_over_a_fifth_full() {
     let d2 = st.send_chat(ChatSend { thread_id: t2.id.clone(), text: "/compact-all".into(), ..Default::default() }, "mock").unwrap();
     assert!(d2.sessions.is_empty() && d2.agent_messages[0].body.contains("Сжимать некого"));
 }
+
+#[test]
+fn a_folder_rule_can_be_remembered() {
+    let (st, _, _, _) = setup();
+    let r = st.add_permission_rule("dir", "E:/Projects/Degma", "Работа в папке E:/Projects/Degma").unwrap();
+    assert_eq!(r.kind, "dir");
+    assert!(st.list_permission_rules().unwrap().iter().any(|x| x.kind == "dir" && x.value == "E:/Projects/Degma"));
+    assert!(st.add_permission_rule("anything", "x", "").is_err());
+}
