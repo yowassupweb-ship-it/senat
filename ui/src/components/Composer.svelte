@@ -219,13 +219,16 @@
   }
   const candidates = $derived(mention ? app.agents.filter((a) => (a.slug + ' ' + a.name).toLowerCase().includes(mention!.q.toLowerCase())) : []);
 
-  // Slash commands. Only one so far: /compact shortens a long chat by having the specialist write a summary and
-  // carry on from it in a fresh session, so a chat can go on for as long as the work does.
-  const COMMANDS = [{ name: 'compact', hint: 'Сжать контекст чата: специалист сделает сводку и продолжит с неё. После команды можно добавить, что учесть.' }];
+  // Slash commands: /compact shortens a long chat by having the specialist write a summary and carry on from it in a
+  // fresh session; /compact-all does that for everyone in the chat whose context is over a fifth full.
+  const COMMANDS = [
+    { name: 'compact', hint: 'Сжать контекст чата: специалист сделает сводку и продолжит с неё. После команды можно добавить, что учесть.' },
+    { name: 'compact-all', hint: 'Сжать всех в этом чате, у кого контекст больше 20%: каждый сделает сводку и продолжит с неё.' },
+  ];
   const slash = $derived.by(() => {
     if (compact || mention) return [];
-    const m = /^\/([a-z]*)$/i.exec(text);
-    return m && text !== '/compact' ? COMMANDS.filter((c) => c.name.startsWith(m[1].toLowerCase())) : [];
+    const m = /^\/([a-z-]*)$/i.exec(text);
+    return m && !COMMANDS.some((c) => text === `/${c.name}`) ? COMMANDS.filter((c) => c.name.startsWith(m[1].toLowerCase())) : [];
   });
   function pickSlash(name: string) {
     text = `/${name} `;

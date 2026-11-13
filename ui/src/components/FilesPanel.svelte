@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Spinner from './Spinner.svelte';
   // The project folder as a tree, read on the computer it lives on. Folders open on click (big generated ones —
   // node_modules, target, dist — are shown faint and open only when asked); a file opens below the tree, with
   // "into the message" and "open in VS Code" on the computer that has it.
@@ -126,7 +127,7 @@
       </button>
       {#if e.dir && open[e.path]}
         {#if loading[e.path] && !children[e.path]}
-          <p class="faint load" style="padding-left:{30 + depth * 14}px">Загрузка…</p>
+          <p class="load" style="padding-left:{30 + depth * 14}px"><Spinner size={13} /></p>
         {:else}
           <ul>{@render level(e.path, depth + 1)}</ul>
         {/if}
@@ -144,7 +145,7 @@
   {#if error}
     <p class="faint pad">{error}</p>
   {:else if !children['']}
-    <p class="faint pad">Загрузка…</p>
+    <Spinner fill />
   {:else}
     <div class="treebox" class:half={!!selected}>
       <ul class="tree">{@render level('', 0)}</ul>
@@ -161,7 +162,7 @@
         <button class="icon-btn" onclick={() => ((selected = null), (file = null))} aria-label="Закрыть файл" title="Закрыть файл"><Icon name="x" size={13} /></button>
       </div>
       {#if fileLoading && !file}
-        <p class="faint pad">Загрузка…</p>
+        <Spinner fill />
       {:else if fileError}
         <p class="faint pad">{fileError}</p>
       {:else if file?.binary}

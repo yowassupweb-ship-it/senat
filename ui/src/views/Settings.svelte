@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Spinner from '../components/Spinner.svelte';
   import { currentConnection, del, disconnect, get, hubUrl, post, put } from '../lib/api';
   import { activeNodeId, makeLink, parseLink, pingNode, removeNode, savedNodes, setActiveNode, upsertNode, type Reach, type SavedNode } from '../lib/nodes';
   import { app, applyTheme } from '../lib/store.svelte';
@@ -390,7 +391,7 @@
       </div>
     </section>
   {:else}
-    <p class="muted">Загрузка…</p>
+    <Spinner size={28} fill />
   {/if}
 </Page>
 

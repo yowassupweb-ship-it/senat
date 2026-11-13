@@ -439,8 +439,37 @@ impl Store {
         };
         // `/compact`: whoever worked in this chat writes a summary of it (see `workset::compact_prompt`); the node then
         // starts their next turn in a fresh session that is given the summary.
-        let compact = compact_arg(&req.text).map(String::from);
-        let targets = if compact.is_some() && named.is_empty() && thread.agent_id.is_none() {
+        // `/compact-all`: everyone who answered here and whose context is over a fifth full compacts at once.
+        let all = compact_all_arg(&req.text).map(String::from);
+        let compact = compact_arg(&req.text).map(String::from).or(all.clone());
+        let mut skipped: Vec<String> = vec![];
+        let targets = if all.is_some() {
+            let mut seen = std::collections::HashSet::new();
+            let mut who = vec![];
+            for m in self.list_messages(&thread.id, None, 300)?.iter().rev() {
+                if m.author_kind != "agent" || m.props.get("call").is_some() || m.status != MessageStatus::Done {
+                    continue;
+                }
+                let Some(id) = m.author_id.clone() else { continue };
+                if !seen.insert(id.clone()) {
+                    continue; // only each one's latest answer tells how full they are now
+                }
+                let Ok(ag) = self.get_agent(&id) else { continue };
+                let (used, window) = (m.props["work"]["context_tokens"].as_f64().unwrap_or(0.0), m.props["work"]["context_window"].as_f64().unwrap_or(0.0));
+                let share = if window > 0.0 { used / window } else { 0.0 };
+                if share > 0.2 {
+                    who.push(ag);
+                } else {
+                    skipped.push(format!("{} — {}", ag.name, if window > 0.0 { format!("{}%", (share * 100.0).round()) } else { "неизвестно".into() }));
+                }
+            }
+            if who.is_empty() {
+                let text = if skipped.is_empty() { "Сжимать нечего: в этом чате ещё никто не отвечал.".to_string() } else { format!("Сжимать некого: контекст у всех не больше 20% ({}).", skipped.join(", ")) };
+                let m = self.post_message(&thread.id, "system", None, &text, serde_json::json!({}), MessageStatus::Done, None)?;
+                return Ok(Dispatched { user_message: user_msg, agent_messages: vec![m], sessions: vec![] });
+            }
+            who
+        } else if compact.is_some() && named.is_empty() && thread.agent_id.is_none() {
             let mut seen = std::collections::HashSet::new();
             let who: Vec<Agent> = self
                 .list_messages(&thread.id, None, 300)?
@@ -456,6 +485,10 @@ impl Store {
             targets
         };
         let mut d = Dispatched { user_message: user_msg, agent_messages: vec![], sessions: vec![] };
+        if all.is_some() && !skipped.is_empty() {
+            // the person sees who was left as is, and why
+            d.agent_messages.push(self.post_message(&thread.id, "system", None, &format!("Не сжимаются, контекст не больше 20%: {}.", skipped.join(", ")), serde_json::json!({}), MessageStatus::Done, None)?);
+        }
         if targets.is_empty() && compact.is_some() {
             let m = self.post_message(&thread.id, "system", None, "Сжимать нечего: в этом чате ещё никто не отвечал.", serde_json::json!({}), MessageStatus::Done, None)?;
             d.agent_messages.push(m);
@@ -713,6 +746,16 @@ impl Store {
             self.set_setting("seed:assistant", "1")?;
         }
         Ok(())
+    }
+}
+
+/// `/compact-all` or `/compact-all <what to keep in mind>`: the argument, if the text is that command.
+pub fn compact_all_arg(text: &str) -> Option<&str> {
+    let rest = text.trim().strip_prefix("/compact-all")?;
+    if rest.is_empty() || rest.starts_with(char::is_whitespace) {
+        Some(rest.trim())
+    } else {
+        None
     }
 }
 

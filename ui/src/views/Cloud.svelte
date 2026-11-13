@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Spinner from '../components/Spinner.svelte';
   import { del, get, post, postRaw, put } from '../lib/api';
   import { ctx, type MenuItem } from '../lib/contextmenu.svelte';
   import { dateTime } from '../lib/format';
@@ -196,7 +197,7 @@
 
     <div class="drop" class:drag ondragover={(e) => { e.preventDefault(); drag = true; }} ondragleave={() => (drag = false)} ondrop={onDrop} role="region" aria-label="Файлы: перетащите сюда, чтобы загрузить">
       {#if loading && !folders.length && !files.length}
-        <p class="empty muted">Загрузка…</p>
+        <Spinner fill />
       {:else if !folders.length && !files.length}
         <p class="empty muted">Здесь пока пусто. Перетащите файлы в это окно или нажмите «Загрузить».</p>
       {:else}
@@ -223,7 +224,7 @@
       {#if drag}<div class="veil">Отпустите, чтобы загрузить</div>{/if}
     </div>
   {:else if !error}
-    <p class="muted">Загрузка…</p>
+    <Spinner size={28} fill />
   {/if}
 </Page>
 

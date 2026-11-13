@@ -942,3 +942,21 @@ fn a_retry_runs_the_same_specialists_turn_again() {
     let users_after = st.list_messages(&t.id, None, 100).unwrap().iter().filter(|m| m.author_kind == "user").count();
     assert_eq!(users_before, users_after, "the person's message is not sent twice");
 }
+
+#[test]
+fn compact_all_compacts_only_those_over_a_fifth_full() {
+    let (st, dev, arch, p) = setup();
+    let t = st.create_thread(NewThread { project_id: Some(p.id.clone()), ..Default::default() }).unwrap();
+    // the developer's context is 30% full, the architect's 10%
+    st.post_message(&t.id, "agent", Some(&dev.id), "сделал", json!({"work": {"context_tokens": 300, "context_window": 1000}}), MessageStatus::Done, None).unwrap();
+    st.post_message(&t.id, "agent", Some(&arch.id), "посмотрел", json!({"work": {"context_tokens": 100, "context_window": 1000}}), MessageStatus::Done, None).unwrap();
+    let d = st.send_chat(ChatSend { thread_id: t.id.clone(), text: "/compact-all".into(), ..Default::default() }, "mock").unwrap();
+    assert_eq!(d.sessions.len(), 1);
+    assert_eq!(d.sessions[0].agent_id, dev.id);
+    assert!(d.agent_messages.iter().any(|m| m.author_kind == "system" && m.body.contains(&arch.name) && m.body.contains("10%")), "the one left as is is named, with why");
+    // nobody over the line: said so, nothing started
+    let t2 = st.create_thread(NewThread { project_id: Some(p.id.clone()), ..Default::default() }).unwrap();
+    st.post_message(&t2.id, "agent", Some(&arch.id), "ок", json!({"work": {"context_tokens": 50, "context_window": 1000}}), MessageStatus::Done, None).unwrap();
+    let d2 = st.send_chat(ChatSend { thread_id: t2.id.clone(), text: "/compact-all".into(), ..Default::default() }, "mock").unwrap();
+    assert!(d2.sessions.is_empty() && d2.agent_messages[0].body.contains("Сжимать некого"));
+}

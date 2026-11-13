@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Spinner from './Spinner.svelte';
   import { tick, untrack } from 'svelte';
   import { fileUrl, get, patch, post } from '../lib/api';
   import ForumDialog from './ForumDialog.svelte';
@@ -22,6 +23,19 @@
   // the colleagues' answers (retries included), the notes to them and the caller's reactions, in order. The post
   // stands in the chat where the discussion last moved, so a live one is at the bottom.
   type Post = { key: string; author: string | null; calls: Message[]; comments: Message[]; at: number };
+  // the calls of a post as what was said: one request to several colleagues is one line addressed to all of them
+  function asksOf(calls: Message[]): { key: string; to: string[]; text: string }[] {
+    const out: { key: string; to: string[]; text: string }[] = [];
+    for (const c of calls) {
+      const text = c.body.replace(/^→\s*@\S+:\s*/, '').trim();
+      const to = (c.props as any)?.call?.to as string;
+      const same = out.find((a) => a.text === text);
+      if (same) {
+        if (!same.to.includes(to)) same.to.push(to);
+      } else out.push({ key: c.id, to: [to], text });
+    }
+    return out;
+  }
   type Item = { kind: 'msg'; m: Message; at: number } | { kind: 'post'; p: Post; at: number };
   const flow = $derived.by(() => {
     const byId = new Map(messages.map((m) => [m.id, m]));
@@ -401,26 +415,25 @@
             <button class="older" onclick={() => loadMessages(threadId!, messages[0]?.id)}>Показать раньше</button>
           {/if}
           {#if loading}
-            <p class="faint center">Загрузка…</p>
+            <Spinner size={24} fill />
           {/if}
           {#each flow as it (it.kind === 'msg' ? it.m.id : 'p' + it.p.key)}
             {#if it.kind === 'msg'}
               <MessageView m={it.m} onanswer={answer} onstop={stop} onretry={retry} onimage={(a) => (lightbox = a)} onreply={isForum ? undefined : reply} />
             {:else}
               {@const who = agentById(it.p.author)}
+              <!-- the caller's message to colleagues, as a chat message: the same request to several is said once -->
               <section class="post" aria-label="Обсуждение">
-                <header class="ph">
+                <div class="ph">
                   <Avatar name={who?.name} color={who?.accent} size={22} />
                   <b>{who?.name ?? 'Специалист'}</b>
-                  <span class="faint">{it.p.calls.length > 1 ? 'собрал обсуждение' : 'зовёт коллегу'}</span>
                   <time class="faint">{new Date(it.p.calls[0].created_at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}</time>
-                </header>
-                <ul class="asks">
-                  {#each it.p.calls as c (c.id)}
-                    {@const to = agentById((c.props as any)?.call?.to)}
-                    <li><span class="to"><Avatar name={to?.name} color={to?.accent} size={16} />{to?.name ?? 'коллега'}</span><span class="rq">{c.body.replace(/^→\s*@\S+:\s*/, '')}</span></li>
-                  {/each}
-                </ul>
+                </div>
+                {#each asksOf(it.p.calls) as ask (ask.key)}
+                  <p class="say">
+                    {#each ask.to as id (id)}{@const to = agentById(id)}<span class="mention">@{to?.name ?? 'коллега'}</span>{' '}{/each}{ask.text}
+                  </p>
+                {/each}
                 {#if it.p.comments.length}
                   <div class="comments" role="group" aria-label="Ответы и реплики">
                     {#each it.p.comments as c (c.id)}
@@ -538,52 +551,29 @@
   }
   /* a discussion: the calls as a post, the answers as comments under it */
   .post {
-    margin: 8px 0 12px;
-    padding: 10px 12px 6px;
-    border-radius: var(--radius);
-    background: var(--bg-raised);
-    box-shadow: inset 0 0 0 1px var(--line);
+    margin: 6px 0 10px;
   }
   .ph {
     display: flex;
     align-items: center;
     gap: 8px;
-    font-size: 13px;
+    margin-bottom: 4px;
+  }
+  .ph b {
+    font-weight: 600;
   }
   .ph time {
     margin-left: auto;
     font-size: 12px;
   }
-  .asks {
-    list-style: none;
-    margin: 6px 0 4px 30px;
-    padding: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 3px;
-    font-size: 13px;
+  .say {
+    margin: 0 0 6px 30px;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
   }
-  .asks li {
-    display: flex;
-    gap: 8px;
-    align-items: baseline;
-    min-width: 0;
-  }
-  .to {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    flex: none;
+  .mention {
     font-weight: 600;
-  }
-  .rq {
-    color: var(--fg-2);
-    min-width: 0;
-    overflow: hidden;
-    display: -webkit-box;
-    -webkit-line-clamp: 2;
-    line-clamp: 2;
-    -webkit-box-orient: vertical;
+    color: var(--fg);
   }
   .comments {
     margin: 6px 0 4px 11px;

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Spinner from './Spinner.svelte';
   import { get } from '../lib/api';
   import { app, loadGit, loadThreadGit } from '../lib/store.svelte';
   import { baseName } from '../lib/format';
@@ -56,7 +57,7 @@
   {/if}
 
   {#if !git}
-    <p class="faint pad">Загрузка…</p>
+    <Spinner fill />
   {:else if !git.available}
     <p class="faint pad">Недоступно: {git.reason}. Папка проекта должна быть git-репозиторием.</p>
   {:else}
@@ -77,7 +78,7 @@
     </ul>
     {#if selected}
       <div class="diffwrap">
-        {#if loading && !diff}<p class="faint pad">Загрузка…</p>{:else}<Diff unified={diff} />{/if}
+        {#if loading && !diff}<Spinner fill />{:else}<Diff unified={diff} />{/if}
       </div>
     {/if}
   {/if}

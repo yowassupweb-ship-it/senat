@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Spinner from './components/Spinner.svelte';
   import { onMount } from 'svelte';
   import { ApiError, bootstrapConnection, openExternal, setConnection } from './lib/api';
   import { parseLink } from './lib/nodes';
@@ -167,7 +168,7 @@
   {#if app.palette}<Palette />{/if}
   {#if forumOpen}<ForumDialog onclose={() => (forumOpen = false)} />{/if}
 {:else}
-  <div class="boot muted">Загрузка…</div>
+  <div class="boot"><Spinner size={28} fill /></div>
 {/if}
 </div>
 

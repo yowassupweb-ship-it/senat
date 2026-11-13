@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Spinner from '../components/Spinner.svelte';
   import Dropdown from '../components/Dropdown.svelte';
   import { get, patch, post, put } from '../lib/api';
   import { app, go } from '../lib/store.svelte';
@@ -220,7 +221,7 @@
     </div>
   </Page>
 {:else}
-  <Page title="Проект"><p class="muted">{error || 'Загрузка…'}</p></Page>
+  <Page title="Проект">{#if error}<p class="muted">{error}</p>{:else}<Spinner size={28} fill />{/if}</Page>
 {/if}
 
 <style>
