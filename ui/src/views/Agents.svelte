@@ -526,6 +526,8 @@
     display: flex;
     gap: 6px;
     flex-wrap: wrap;
+    /* the model and counters sit on the card's bottom edge, whatever the length of the description */
+    margin-top: auto;
   }
   .bad {
     color: var(--bad);

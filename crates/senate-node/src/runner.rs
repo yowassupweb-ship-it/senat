@@ -114,6 +114,7 @@ fn spec_to_json(s: &RunSpec, slug: &str, skills_dir: &str) -> Value {
         "mcp": s.mcp.as_ref().map(|m| json!({"command": m.command, "args": m.args, "env": m.env})),
         "extra_mcp": s.extra_mcp.iter().map(|m| json!({"name": m.name, "kind": m.kind, "command": m.command, "args": m.args, "env": m.env, "url": m.url, "headers": m.headers, "trusted": m.trusted})).collect::<Vec<_>>(),
         "slug": slug, "skills_dir": skills_dir,
+        "extra_dirs": s.extra_dirs.iter().map(|d| d.to_string_lossy()).collect::<Vec<_>>(),
     })
 }
 
@@ -430,6 +431,7 @@ async fn handle_job(hub: String, token: String, data_dir: PathBuf, job: Value) {
         resume: job["resume"].as_str().map(String::from),
         mcp,
         extra_mcp,
+        extra_dirs: job["extra_dirs"].as_array().map(|a| a.iter().filter_map(|d| d.as_str()).map(PathBuf::from).collect()).unwrap_or_default(),
         bare: job["bare"].as_bool().unwrap_or(false),
         env: pairs(&job["env"]),
         work_dir,

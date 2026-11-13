@@ -96,7 +96,8 @@ impl Approver for NodeApprover {
         Box::pin(async move {
             let (tx, rx) = oneshot::channel();
             let rule = crate::permissions::candidate(&req, &self.cwd);
-            self.app.pending.lock().unwrap().insert(self.message_id.clone(), Pending { tx, tool_use_id: req.tool_use_id, rule });
+            let dir = crate::permissions::dir_candidate(&req, &self.cwd);
+            self.app.pending.lock().unwrap().insert(self.message_id.clone(), Pending { tx, tool_use_id: req.tool_use_id, rule, dir });
             rx.await.unwrap_or(Decision::Deny("Ожидание разрешения прервано.".into()))
         })
     }
@@ -265,6 +266,7 @@ pub(crate) async fn execute(app: Arc<App>, s: Session) {
         mcp,
         // The specialist's own equipment: only the MCP servers assigned to them (or shared).
         extra_mcp: store.mcp_for_agent(&agent.id).unwrap_or_default().iter().map(ExtraMcp::from).collect(),
+        extra_dirs: crate::permissions::allowed_dirs(&store.list_permission_rules().unwrap_or_default()),
         env: vec![],
         bare: false,
         work_dir: app.work_dir(),
@@ -296,7 +298,8 @@ pub(crate) async fn execute(app: Arc<App>, s: Session) {
                         Some(Event::Ask(req)) => {
                             flush(&app, &msg_id, &mut acc);
                             let always = crate::permissions::candidate(&req, &cwd_c).map(|c| c.label);
-                            let ask = json!({"kind": "permission", "toolUseId": req.tool_use_id, "tool": req.tool, "input": req.input, "question": req.reason, "state": "pending", "always": always});
+                            let dir = crate::permissions::dir_candidate(&req, &cwd_c).map(|c| json!({"label": c.label, "path": c.value}));
+                            let ask = json!({"kind": "permission", "toolUseId": req.tool_use_id, "tool": req.tool, "input": req.input, "question": req.reason, "state": "pending", "always": always, "dir": dir});
                             if let Ok(m) = app.store.update_message(&msg_id, None, Some(&json!({"ask": ask})), None) {
                                 app.publish("message", serde_json::to_value(&m).unwrap_or_default());
                             }

@@ -3,7 +3,9 @@
   import Icon from './Icon.svelte';
   import Diff from './Diff.svelte';
 
-  let { ask, onanswer }: { ask: Ask; onanswer: (allow: boolean, always?: boolean) => void } = $props();
+  let { ask, onanswer }: { ask: Ask; onanswer: (allow: boolean, always?: boolean | 'dir') => void } = $props();
+  // The folder offered in one click: its last two parts are enough to recognise it.
+  const dirName = $derived(ask.dir ? ask.dir.path.replace(/[\\/]+$/, '').split(/[\\/]/).slice(-2).join('/') : '');
   const input = $derived(ask.input ?? {});
   const isEdit = $derived(/^(Edit|MultiEdit)$/.test(ask.tool ?? ''));
   const isWrite = $derived(ask.tool === 'Write');
@@ -17,13 +19,19 @@
     <div class="q">
       <b>{#if ask.state === 'pending'}Нужно ваше разрешение{:else if ask.state === 'allowed'}Разрешено{:else}Отклонено{/if}</b>
       <span class="muted">{ask.question}</span>
-      {#if ask.state === 'pending' && ask.always}<span class="always faint">«Разрешать всегда» запомнит: {ask.always}</span>{/if}
+      {#if ask.state === 'pending' && ask.dir}<span class="always faint">Папка {ask.dir.path}: файлы и обычные команды больше не спрашиваются, опасные операции — по-прежнему</span>
+      {:else if ask.state === 'pending' && ask.always}<span class="always faint">«Разрешать всегда» запомнит: {ask.always}</span>{/if}
     </div>
     {#if ask.state === 'pending'}
       <div class="acts">
         <button class="btn" onclick={() => onanswer(false)}>Отклонить</button>
-        {#if ask.always}<button class="btn" onclick={() => onanswer(true, true)} title={`Запомнить: ${ask.always}. Отменить можно в Настройках.`}>Разрешать всегда</button>{/if}
-        <button class="btn primary" onclick={() => onanswer(true)}>{isPlan ? 'Выполнять' : 'Разрешить'}</button>
+        {#if ask.dir}
+          <button class="btn" onclick={() => onanswer(true)}>Только сейчас</button>
+          <button class="btn primary" onclick={() => onanswer(true, 'dir')} title={`${ask.dir.label}. Отменить можно в Настройках → Разрешения.`}>Разрешить работу в {dirName}</button>
+        {:else}
+          {#if ask.always}<button class="btn" onclick={() => onanswer(true, true)} title={`Запомнить: ${ask.always}. Отменить можно в Настройках.`}>Разрешать всегда</button>{/if}
+          <button class="btn primary" onclick={() => onanswer(true)}>{isPlan ? 'Выполнять' : 'Разрешить'}</button>
+        {/if}
       </div>
     {/if}
   </div>

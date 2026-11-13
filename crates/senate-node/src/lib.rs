@@ -16,6 +16,7 @@ pub mod s3;
 mod project_git;
 mod reflect;
 mod uploads;
+mod usage;
 
 use senate_core::tools::ToolCtx;
 use senate_core::Store;
@@ -63,6 +64,8 @@ pub(crate) struct Pending {
     pub tool_use_id: String,
     /// What "allow always" would remember for this question (None: it is always asked about).
     pub rule: Option<permissions::Candidate>,
+    /// What "allow work in this folder" would remember (None: not about a folder, or dangerous).
+    pub dir: Option<permissions::Candidate>,
 }
 
 pub struct App {
@@ -242,6 +245,7 @@ pub async fn serve(cfg: Config) -> Result<Handle, String> {
         tokio::spawn(async move { accounts::refresh_all(&a).await });
     }
     accounts::spawn_refresher(&app);
+    usage::spawn(&app);
 
     executor::recover(&app);
     forum::resume_all(&app);

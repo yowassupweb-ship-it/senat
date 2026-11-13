@@ -36,12 +36,28 @@ if (!flag('--apply')) {
   process.exit(0);
 }
 let created = 0, added = 0;
+// The node takes requests up to 2 MB: a long chat goes in parts (the import adds what is missing, so parts are safe).
+const LIMIT = 1_500_000;
+function parts(p) {
+  const out = [];
+  let cur = [], size = 0;
+  for (const m of p.messages) {
+    const s = Buffer.byteLength(JSON.stringify(m));
+    if (cur.length && size + s > LIMIT) { out.push(cur); cur = []; size = 0; }
+    cur.push(m);
+    size += s;
+  }
+  out.push(cur);
+  return out;
+}
 for (const p of plan) {
-  const r = await fetch(`${base}/api/import/threads`, { method: 'POST', headers: H, body: JSON.stringify({ threads: [p] }) });
-  if (r.status === 404 || r.status === 405) throw new Error('на ноде нет импорта: сначала обновите ноду (deploy\\push.ps1)');
-  if (!r.ok) throw new Error(`${p.thread.title}: ${r.status} ${await r.text()}`);
-  const [x] = await r.json();
-  created += x.created ? 1 : 0;
-  added += x.messages_added;
+  for (const messages of parts(p)) {
+    const r = await fetch(`${base}/api/import/threads`, { method: 'POST', headers: H, body: JSON.stringify({ threads: [{ thread: p.thread, messages }] }) });
+    if (r.status === 404 || r.status === 405) throw new Error('на ноде нет импорта: сначала обновите ноду (deploy\\push.ps1)');
+    if (!r.ok) throw new Error(`${p.thread.title}: ${r.status} ${await r.text()}`);
+    const [x] = await r.json();
+    created += x.created ? 1 : 0;
+    added += x.messages_added;
+  }
 }
 console.log(`\nГотово: чатов перенесено ${created}, сообщений добавлено ${added}.`);

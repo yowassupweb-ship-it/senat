@@ -437,6 +437,7 @@ async fn permission_rule_add(State(a): S, Json(b): Json<Value>) -> R {
     let label = b["label"].as_str().filter(|l| !l.is_empty()).map(String::from).unwrap_or_else(|| match kind {
         "tool" => format!("Инструмент {value}"),
         "cmd" => format!("Команды, начинающиеся с «{value}»"),
+        "dir" => format!("Работа в папке {value}: файлы и команды, кроме опасных"),
         _ => format!("Запись в файлы папки {value}"),
     });
     ok(a.store.add_permission_rule(kind, value, &label)?)
@@ -455,6 +456,12 @@ async fn answer(State(a): S, Path(id): Path<String>, Json(b): Json<Value>) -> R 
     // "Allow always": remember what the card said it would remember — never more, and never for a refusal.
     if allow && b["always"] == true {
         if let Some(c) = &p.rule {
+            a.store.add_permission_rule(c.kind, &c.value, &c.label)?;
+        }
+    }
+    // "Allow work in this folder": files and commands there, from now on (Settings → Разрешения to take it back).
+    if allow && b["scope"] == "dir" {
+        if let Some(c) = &p.dir {
             a.store.add_permission_rule(c.kind, &c.value, &c.label)?;
         }
     }

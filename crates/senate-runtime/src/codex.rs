@@ -9,10 +9,13 @@ use std::time::Duration;
 
 const RUN_LIMIT: Duration = Duration::from_secs(2 * 60 * 60);
 
+/// Codex cannot ask in headless mode, so its sandbox decides alone. "Под ключ" means the person chose not to be
+/// asked: the folder fence goes too, otherwise work outside the project folder fails with nobody to ask.
 fn sandbox(mode: PermissionMode) -> &'static str {
     match mode {
         PermissionMode::Plan | PermissionMode::Ask => "read-only",
-        PermissionMode::Edit | PermissionMode::Auto => "workspace-write",
+        PermissionMode::Edit => "workspace-write",
+        PermissionMode::Auto => "danger-full-access",
     }
 }
 
@@ -90,6 +93,12 @@ pub async fn run(spec: RunSpec, _approver: &dyn Approver, tx: EventTx, mut cance
     ] {
         args.push("-c".into());
         args.push(format!("{k}={v}"));
+    }
+    // Folders the person allowed besides the project one are writable too.
+    let roots: Vec<String> = spec.extra_dirs.iter().filter(|d| d.is_dir()).map(|d| d.to_string_lossy().into_owned()).collect();
+    if spec.mode == PermissionMode::Edit && !roots.is_empty() {
+        args.push("-c".into());
+        args.push(format!("sandbox_workspace_write.writable_roots={}", json!(roots)));
     }
     args.extend(mcp_flags(&spec));
     if let Some(m) = spec.model() {

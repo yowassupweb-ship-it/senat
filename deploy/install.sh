@@ -35,6 +35,11 @@ for i in $(seq 1 60); do
 done
 [ "${ok:-0}" = 1 ] || { echo "Нода не стала healthy. Лог: docker logs senate-node"; exit 1; }
 
+# The disk is shared with MBOX and small: drop what this build left behind that nothing uses (untagged images,
+# dangling build cache). Tagged images — senate-node:prev for the rollback among them — and volumes stay.
+docker image prune -f >/dev/null 2>&1 || true
+docker builder prune -f >/dev/null 2>&1 || true
+
 TOKEN="$(docker exec senate-node cat /data/token)"
 cat <<EOF
 

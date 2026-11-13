@@ -11,6 +11,7 @@
   import Composer, { type Settings, type Todo } from './Composer.svelte';
   import Icon from './Icon.svelte';
   import MessageView from './Message.svelte';
+  import UsageRings from './UsageRings.svelte';
 
   let { threadId, projectId }: { threadId?: string; projectId?: string } = $props();
 
@@ -114,6 +115,25 @@
   });
 
   // ---------- actions ----------
+  // Reply to a specialist's message: address its author and quote the start of it, above whatever is drafted.
+  async function reply(m: Message) {
+    const who = app.agents.find((a) => a.id === m.author_id);
+    if (!who || !threadId) return;
+    const plain = m.body.replace(/```[\s\S]*?```/g, '[код]').replace(/\s+/g, ' ').trim();
+    const quote = plain.length > 220 ? plain.slice(0, 220).replace(/\s\S*$/, '') + '…' : plain;
+    const head = `@${who.slug}\n> ${quote}\n\n`;
+    // a second reply replaces the first quote instead of stacking them
+    const draft = (app.drafts[threadId] ?? '').replace(/^@\S+\n> [^\n]*\n\n/, '');
+    app.drafts[threadId] = head + draft;
+    await tick();
+    const ta = document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Сообщение"]');
+    if (ta) {
+      ta.focus();
+      ta.setSelectionRange(ta.value.length, ta.value.length);
+      ta.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+  }
+
   async function send(text: string, attachments: { id?: string }[] = []) {
     error = '';
     try {
@@ -148,9 +168,10 @@
     return true;
   }
 
-  async function answer(m: Message, allow: boolean, always = false) {
+  async function answer(m: Message, allow: boolean, always: boolean | 'dir' = false) {
     try {
-      await post(`/api/messages/${m.id}/answer`, { decision: allow ? 'allow' : 'deny', ...(allow && always ? { always: true } : {}) });
+      const extra = !allow ? {} : always === 'dir' ? { scope: 'dir' } : always ? { always: true } : {};
+      await post(`/api/messages/${m.id}/answer`, { decision: allow ? 'allow' : 'deny', ...extra });
     } catch (e: any) {
       error = e.message;
     }
@@ -293,6 +314,7 @@
       {/if}
       {#if !isForum}<span class="chip" title={MODE_LABEL[effMode]?.hint}><Icon name="shield" size={12} />{MODE_LABEL[effMode]?.label}</span>{/if}
       <span class="grow"></span>
+      <UsageRings />
       {#if isForum && (meta.status === 'open' || meta.status === 'summarizing')}
         <button class="btn sm" onclick={() => forumAct('conclude')}>Подвести итог</button>
         <button class="btn sm" onclick={() => forumAct('stop')}>Остановить</button>
@@ -319,7 +341,7 @@
             <p class="faint center">Загрузка…</p>
           {/if}
           {#each messages as m (m.id)}
-            <MessageView {m} onanswer={answer} onstop={stop} onretry={retry} onimage={(a) => (lightbox = a)} />
+            <MessageView {m} onanswer={answer} onstop={stop} onretry={retry} onimage={(a) => (lightbox = a)} onreply={isForum ? undefined : reply} />
           {/each}
           {#if !loading && !messages.length}
             <p class="faint center">Здесь пока пусто. Напишите первое сообщение.</p>

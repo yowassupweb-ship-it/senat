@@ -26,6 +26,7 @@ async fn go(backend: &str, mode: PermissionMode) {
         resume: None,
         mcp: None,
         extra_mcp: vec![],
+        extra_dirs: vec![],
         env: vec![],
         bare: false,
         work_dir: root.join(".run"),

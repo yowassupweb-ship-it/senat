@@ -174,6 +174,7 @@ pub(crate) async fn reflect(app: &Arc<App>, session_id: &str, force: bool) -> Re
         resume: None,
         mcp: None,
         extra_mcp: vec![],
+        extra_dirs: vec![],
         env: vec![],
         bare: true,
         work_dir: app.work_dir(),

@@ -37,7 +37,7 @@ export interface Account {
   account: string;
   models: { id: string; label: string }[];
   login: { state: string; url: string; code: string; needs_code: boolean; message: string } | null;
-  limits: { windows: Record<string, { used: number; resets_at: number }>; at: number } | null;
+  limits: { windows: Record<string, { used: number; resets_at: number }>; at: number; plan?: string } | null;
   latest_version: string;
   update_available: boolean;
   checked_at: number;
@@ -205,13 +205,15 @@ export interface Ask {
   question?: string;
   /** What "Allow always" would remember for this question; null/absent: it is asked about every time. */
   always?: string | null;
+  /** "Allow work in this folder": the folder and what it covers; null/absent when the question is not about one. */
+  dir?: { label: string; path: string } | null;
   state: 'pending' | 'allowed' | 'denied';
 }
 
 /** "Allow always": a decision the person made not to be asked again. */
 export interface PermissionRule {
   id: string;
-  kind: 'path' | 'cmd' | 'tool';
+  kind: 'path' | 'cmd' | 'tool' | 'dir';
   value: string;
   label: string;
   created_at: number;

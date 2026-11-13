@@ -18,7 +18,8 @@
     onstop,
     onretry,
     onimage,
-  }: { m: Message; onanswer: (m: Message, allow: boolean, always?: boolean) => void; onstop: (m: Message) => void; onretry: (m: Message) => void; onimage?: (a: { url: string; name: string }) => void } = $props();
+    onreply,
+  }: { m: Message; onanswer: (m: Message, allow: boolean, always?: boolean | 'dir') => void; onstop: (m: Message) => void; onretry: (m: Message) => void; onimage?: (a: { url: string; name: string }) => void; onreply?: (m: Message) => void } = $props();
 
   const agent = $derived(agentById(m.author_id));
   const working = $derived(m.status === 'working' || m.status === 'queued');
@@ -243,6 +244,9 @@
 
     {#if !working && (m.body || p.work)}
       <div class="foot">
+        {#if m.body && agent && onreply}
+          <button class="icon-btn" onclick={() => onreply(m)} aria-label="Ответить {agent.name}" title="Ответить"><Icon name="reply" size={14} /></button>
+        {/if}
         {#if m.body}
           <button class="icon-btn" onclick={copy} aria-label="Копировать ответ" title="Копировать"><Icon name={copied ? 'check' : 'copy'} size={14} /></button>
         {/if}

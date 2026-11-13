@@ -24,6 +24,7 @@ fn spec(resume: Option<&str>) -> RunSpec {
         resume: resume.map(String::from),
         mcp: None,
         extra_mcp: vec![],
+        extra_dirs: vec![],
         env: vec![],
         bare: false,
         work_dir: root.join(".run"),

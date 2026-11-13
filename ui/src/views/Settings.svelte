@@ -198,7 +198,7 @@
   };
   const modes = [['auto', 'Сам'], ['approve', 'С согласия'], ['deny', 'Нельзя']];
   const themes = [['auto', 'Как в системе'], ['light', 'Светлая'], ['dark', 'Тёмная']];
-  const windowLabel: Record<string, string> = { five_hour: '5 часов', seven_day: 'Неделя', seven_day_opus: 'Неделя · Opus', seven_day_sonnet: 'Неделя · Sonnet' };
+  const windowLabel: Record<string, string> = { five_hour: '5 часов', seven_day: 'Неделя', seven_day_opus: 'Неделя · Opus', seven_day_sonnet: 'Неделя · Sonnet', month: 'Месяц' };
   const resets = (sec: number) => (sec ? dateTime(sec * 1000) : '');
 </script>
 

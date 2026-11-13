@@ -94,6 +94,81 @@ fn tool_name(req: &PermissionRequest) -> Option<String> {
     }
 }
 
+/// Folders a shell command works in: the targets of its `cd` / `pushd` / `Set-Location`, and the run's folder when
+/// it does not start by moving elsewhere. `None` when a target cannot be read (a variable, a climb out with `..`).
+fn command_dirs(cmd: &str, cwd: &Path) -> Option<Vec<PathBuf>> {
+    let mut dirs = vec![];
+    let mut first = true;
+    for seg in cmd.split(|c| c == ';' || c == '&' || c == '|' || c == '\n') {
+        let s = seg.trim();
+        if s.is_empty() {
+            continue;
+        }
+        let mut it = s.splitn(2, char::is_whitespace);
+        let word = it.next().unwrap_or("").to_lowercase();
+        if ["cd", "pushd", "set-location", "sl", "chdir"].contains(&word.as_str()) {
+            let arg = it.next().unwrap_or("").trim();
+            let arg = arg.strip_prefix("/d ").or_else(|| arg.strip_prefix("/D ")).unwrap_or(arg);
+            let arg = arg.strip_prefix("-Path ").or_else(|| arg.strip_prefix("-LiteralPath ")).unwrap_or(arg).trim().trim_matches(['"', '\'']);
+            if arg.is_empty() || arg.contains('$') || arg.contains('%') || arg.starts_with('~') {
+                return None;
+            }
+            let p = Path::new(arg);
+            let full = if p.is_absolute() { p.to_path_buf() } else { cwd.join(p) };
+            if full.components().any(|c| matches!(c, Component::ParentDir)) {
+                return None;
+            }
+            dirs.push(full.components().filter(|c| !matches!(c, Component::CurDir)).collect());
+        } else if first {
+            dirs.push(cwd.to_path_buf());
+        }
+        first = false;
+    }
+    if dirs.is_empty() {
+        dirs.push(cwd.to_path_buf());
+    }
+    Some(dirs)
+}
+
+/// Is `path` the folder `dir` or inside it (either slash, any case: Windows paths are compared as Windows does).
+fn within(path: &Path, dir: &str) -> bool {
+    let p = norm(&path.to_string_lossy());
+    let d = norm(dir);
+    !d.is_empty() && (p == d || p.starts_with(&format!("{d}/")))
+}
+
+/// "Allow work in this folder": the project folder the question is about. Files: the folder the file belongs to;
+/// commands: the folder they run in. Dangerous operations are still asked about, as everywhere.
+pub(crate) fn dir_candidate(req: &PermissionRequest, cwd: &Path) -> Option<Candidate> {
+    if req.reason.starts_with(DANGER_PREFIX) {
+        return None;
+    }
+    let root = if FILE_TOOLS.contains(&req.tool.as_str()) {
+        project_root_of(&file_of(req, cwd)?)
+    } else if SHELLS.contains(&req.tool.as_str()) {
+        let dirs = command_dirs(req.input.get("command").and_then(|v| v.as_str()).unwrap_or(""), cwd)?;
+        let last = dirs.last()?.clone();
+        let root = project_root_of(&last.join("_"));
+        // every folder the command visits must be inside the one offered
+        if !dirs.iter().all(|d| within(d, &root.to_string_lossy())) {
+            return None;
+        }
+        root
+    } else {
+        return None;
+    };
+    if root.components().count() <= 2 {
+        return None; // a drive root or a top-level folder is too broad to offer in one click
+    }
+    // the value keeps the real spelling: it is also handed to the CLIs as a working folder
+    Some(Candidate { kind: "dir", value: root.to_string_lossy().into_owned(), label: format!("Работа в папке {}: файлы и команды, кроме опасных", root.display()) })
+}
+
+/// The folders "dir" rules allow, for the CLIs that keep their own folder list.
+pub(crate) fn allowed_dirs(rules: &[PermissionRule]) -> Vec<PathBuf> {
+    rules.iter().filter(|r| r.kind == "dir").map(|r| PathBuf::from(&r.value)).collect()
+}
+
 /// What "allow always" would remember for this question; `None` when it must be asked about every time.
 pub(crate) fn candidate(req: &PermissionRequest, cwd: &Path) -> Option<Candidate> {
     if req.reason.starts_with(DANGER_PREFIX) {
@@ -120,6 +195,15 @@ pub(crate) fn allowed(rules: &[PermissionRule], req: &PermissionRequest, cwd: &P
         return false;
     }
     rules.iter().any(|r| match r.kind.as_str() {
+        "dir" => {
+            if FILE_TOOLS.contains(&req.tool.as_str()) {
+                file_of(req, cwd).map(|f| within(&f, &r.value)).unwrap_or(false)
+            } else if SHELLS.contains(&req.tool.as_str()) {
+                command_dirs(req.input.get("command").and_then(|v| v.as_str()).unwrap_or(""), cwd).map(|ds| ds.iter().all(|d| within(d, &r.value))).unwrap_or(false)
+            } else {
+                false
+            }
+        }
         "path" => {
             FILE_TOOLS.contains(&req.tool.as_str())
                 && file_of(req, cwd).map(|f| norm(&show(&f)).starts_with(&format!("{}/", r.value.trim_end_matches('/')))).unwrap_or(false)
@@ -173,6 +257,43 @@ mod tests {
         assert!(!allowed(&rules, &req("Edit", json!({"file_path": proj.join("..").join("other.txt").to_string_lossy()}), "x"), &d));
         // a rule about files says nothing about commands
         assert!(!allowed(&rules, &req("Bash", json!({"command": "rm a"}), "Выполнить команду"), &d));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_folder_rule_covers_files_and_commands_there_but_not_danger() {
+        let d = std::env::temp_dir().join(format!("senate-dir-{}", senate_core::new_id()));
+        let proj = d.join("sites").join("cruise");
+        std::fs::create_dir_all(proj.join("src")).unwrap();
+        std::fs::write(proj.join("package.json"), "{}").unwrap();
+        let other = d.join("sites").join("cruise-old");
+        std::fs::create_dir_all(&other).unwrap();
+        let file = |p: &Path| req("Write", json!({"file_path": p.to_string_lossy()}), "Изменить файл вне папки проекта");
+        let sh = |c: String| req("Bash", json!({"command": c}), "Выполнить команду");
+
+        // offered for a file and for a chained command that moves into the project
+        let c = dir_candidate(&file(&proj.join("src").join("a.ts")), &d).unwrap();
+        assert_eq!(c.kind, "dir");
+        assert!(c.label.contains("cruise"), "{}", c.label);
+        let chained = format!("cd \"{}\" && npm run dev", proj.display());
+        let c2 = dir_candidate(&sh(chained.clone()), &d).unwrap();
+        assert!(within(Path::new(&c2.value), &c.value) && within(Path::new(&c.value), &c2.value));
+        let rules = [rule(&c)];
+
+        // files and commands inside: yes, even chains the command rule never covers
+        assert!(allowed(&rules, &file(&proj.join("README.md")), &d));
+        assert!(allowed(&rules, &sh(chained), &d));
+        assert!(allowed(&rules, &sh("npm test && npm run build".into()), &proj.join("src")));
+        // a neighbour with a similar name, a jump out, a variable, and danger: no
+        assert!(!allowed(&rules, &file(&other.join("a.txt")), &d));
+        assert!(!allowed(&rules, &sh(format!("cd \"{}\" && npm i", other.display())), &proj));
+        assert!(!allowed(&rules, &sh("cd $HOME && ls".into()), &proj));
+        assert!(!allowed(&rules, &sh("npm test".into()), &d), "the run's own folder is outside");
+        let danger = req("Bash", json!({"command": "git push"}), &format!("{DANGER_PREFIX} (git push): git push"));
+        assert!(!allowed(&rules, &danger, &proj));
+        assert!(dir_candidate(&danger, &proj).is_none());
+        // the CLIs are told the real folder
+        assert_eq!(allowed_dirs(&rules), vec![PathBuf::from(&c.value)]);
         let _ = std::fs::remove_dir_all(&d);
     }
 

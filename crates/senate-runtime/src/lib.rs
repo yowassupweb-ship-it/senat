@@ -72,6 +72,9 @@ pub struct RunSpec {
     pub mcp: Option<McpSpec>,
     /// MCP servers assigned to this specialist.
     pub extra_mcp: Vec<ExtraMcp>,
+    /// Folders the person allowed work in, besides `cwd` ("Разрешить работу в этой директории"). A CLI with its
+    /// own sandbox (Codex) or folder list (Claude) is told about them, so work there is not refused or re-asked.
+    pub extra_dirs: Vec<PathBuf>,
     /// One-shot helper run (reflection, probes): no tools at all, nothing to approve.
     pub bare: bool,
     /// Extra environment for the CLI (reserved for provider settings); never logged.

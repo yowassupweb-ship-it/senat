@@ -211,6 +211,11 @@ async fn attempt(spec: &RunSpec, approver: &dyn Approver, tx: &EventTx, mut canc
         args.push("--resume".into());
         args.push(r.clone());
     }
+    // Folders the person allowed besides the project one: Claude works in them as in its own.
+    for d in spec.extra_dirs.iter().filter(|d| d.is_dir()) {
+        args.push("--add-dir".into());
+        args.push(d.to_string_lossy().into_owned());
+    }
 
     let mut cmd = cli::command(&exe);
     cmd.args(&args)
