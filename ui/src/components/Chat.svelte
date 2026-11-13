@@ -429,6 +429,7 @@
                 <div class="ph">
                   <Avatar name={who?.name} color={who?.accent} size={22} />
                   <b>{who?.name ?? 'Специалист'}</b>
+                  <span class="gather"><Icon name="users" size={12} />{asksOf(it.p.calls).reduce((n, x) => n + x.to.length, 0) > 1 ? 'собрал коллег' : 'зовёт коллегу'}</span>
                   <time class="faint">{new Date(it.p.calls[0].created_at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}</time>
                 </div>
                 {#each asksOf(it.p.calls) as ask (ask.key)}
@@ -583,6 +584,18 @@
   .ph time {
     margin-left: auto;
     font-size: 12px;
+  }
+  .gather {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 0 7px;
+    height: 20px;
+    border-radius: 10px;
+    background: var(--bg-hover);
+    color: var(--fg-2);
+    font-size: 11.5px;
+    font-weight: 500;
   }
   .say {
     margin: 0 0 6px 30px;

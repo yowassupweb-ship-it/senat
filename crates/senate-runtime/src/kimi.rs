@@ -400,7 +400,12 @@ fn update(u: &Value, t: &mut Tracker, thought: &mut String, answering: &mut bool
                 t.flush_text_to_step();
                 *answering = false;
             }
-            let (name, input) = tool_identity(u);
+            let (name, mut input) = tool_identity(u);
+            if input.as_object().map(|o| o.is_empty()).unwrap_or(true) {
+                input = input_from_context(u, &name);
+            }
+            // remembered for the updates that come without a name
+            args_buf.insert(format!("name:{id}"), name.clone());
             t.tool_start(&id, &name, crate::claude::hint_of(&name, &input), input);
         }
         "tool_call_update" => {
@@ -408,8 +413,25 @@ fn update(u: &Value, t: &mut Tracker, thought: &mut String, answering: &mut bool
             if !t.has_tool(&id) {
                 return;
             }
-            let (name, input) = tool_identity(u);
-            t.tool_identify(&id, &name, crate::claude::hint_of(&name, &input));
+            // Kimi names the tool in its first event only; an update without a name keeps the one already known
+            // (it used to be overwritten with "tool"), and what the step is about comes later — the file in
+            // `locations`, the command in the text "Running: …".
+            let has_name = u["toolName"].is_string() || u["name"].is_string() || u["title"].is_string();
+            let known = args_buf.get(&format!("name:{id}")).cloned();
+            let (mut name, mut input) = tool_identity(u);
+            if !has_name {
+                if let Some(k) = known.clone() {
+                    name = k;
+                }
+            } else {
+                args_buf.insert(format!("name:{id}"), name.clone());
+            }
+            if input.as_object().map(|o| o.is_empty()).unwrap_or(true) {
+                input = input_from_context(u, &name);
+            }
+            if has_name || input.as_object().map(|o| !o.is_empty()).unwrap_or(false) {
+                t.tool_identify(&id, &name, crate::claude::hint_of(&name, &input));
+            }
             let done = matches!(u["status"].as_str(), Some("completed" | "failed"));
             if !done {
                 // While running, `content` may carry accumulated arguments rather than a result.
@@ -463,6 +485,25 @@ fn update(u: &Value, t: &mut Tracker, thought: &mut String, answering: &mut bool
 
 /// Tool name and structured input of an ACP tool call. File edits carry a diff in `content`:
 /// shown as an Edit with before/after so the chat can render it.
+/// What a Kimi step is about when it sends no arguments: the file in `locations`, or the command in a text like
+/// "Running: echo hi" / "Requesting approval to Running: …".
+fn input_from_context(u: &Value, name: &str) -> Value {
+    if let Some(p) = u["locations"].as_array().and_then(|l| l.first()).and_then(|l| l["path"].as_str()) {
+        return json!({"file_path": p});
+    }
+    let text = text_of(&u["content"]);
+    if let Some(i) = text.find("Running:") {
+        let cmd = text[i + "Running:".len()..].trim();
+        if !cmd.is_empty() {
+            return json!({"command": cmd});
+        }
+    }
+    if name == "Bash" && !text.trim().is_empty() && text.len() < 400 {
+        return json!({"command": text.trim()});
+    }
+    json!({})
+}
+
 fn tool_identity(u: &Value) -> (String, Value) {
     let name = u["toolName"].as_str().or(u["name"].as_str()).or(u["title"].as_str()).unwrap_or("tool").trim_start_matches("mcp__senate__").to_string();
     if let Some(d) = u["content"].as_array().and_then(|a| a.iter().find(|c| c["type"] == "diff")) {
@@ -480,6 +521,17 @@ fn tool_identity(u: &Value) -> (String, Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_kimi_step_shows_what_it_does() {
+        // what Kimi 2.6 sends: the name only first, the file at the end, the command as text
+        let first = json!({"toolCallId": "1", "title": "Read", "kind": "read", "status": "pending"});
+        assert_eq!(tool_identity(&first).0, "Read");
+        let done = json!({"toolCallId": "1", "status": "completed", "locations": [{"path": "/tmp/x/README.md"}]});
+        assert_eq!(input_from_context(&done, "Read"), json!({"file_path": "/tmp/x/README.md"}));
+        let ask = json!({"content": [{"type": "content", "content": {"type": "text", "text": "Requesting approval to Running: echo hi"}}]});
+        assert_eq!(input_from_context(&ask, "Bash"), json!({"command": "echo hi"}));
+    }
 
     #[test]
     fn a_session_from_another_folder_is_not_continued() {
