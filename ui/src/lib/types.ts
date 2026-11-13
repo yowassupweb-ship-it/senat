@@ -275,6 +275,14 @@ export interface MessageProps {
   request?: string;
   /** This run continues after a colleague answered. */
   reply_from?: string;
+  /** The convener's turn with a council's answers: the council's decision. */
+  council?: boolean;
+  /** Who in the council did not answer in time. */
+  missing?: string[];
+  /** The person's word in a council (post key and who it went to). */
+  council_note?: { post: string; to: string[] };
+  /** The convener answering the person's word in a council (post key). */
+  council_reply?: string;
 }
 
 export interface Message {

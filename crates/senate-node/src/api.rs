@@ -93,6 +93,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/uploads", post(upload).layer(DefaultBodyLimit::max(uploads::MAX_BYTES + 1024 * 1024)))
         .route("/api/uploads/:id/:name", get(serve_upload))
         .route("/api/threads/:id/preview/open", post(open_preview))
+        .route("/api/threads/:id/council-note", post(council_note))
         .route("/api/threads/:id/plan/pause", post(plan_pause))
         .route("/api/threads/:id/plan/resume", post(plan_resume))
         .route("/api/messages/:id/answer", post(answer))
@@ -557,6 +558,18 @@ async fn cancel(State(a): S, Path(id): Path<String>) -> R {
 
 /// "I do not agree with this plan": everyone working in the chat is stopped, the plan is kept, and the
 /// person's next message reaches the specialist as an objection to it.
+/// The person's word in a council: `{post, leader, members: [agent ids], text}`.
+async fn council_note(State(a): S, Path(id): Path<String>, Json(b): Json<Value>) -> R {
+    let members: Vec<String> = b["members"].as_array().map(|l| l.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
+    let (shown, turn) = a.store.council_note(&id, b["post"].as_str().unwrap_or(""), b["leader"].as_str().unwrap_or(""), &members, b["text"].as_str().unwrap_or(""), &a.backend_default())?;
+    a.publish("message", serde_json::to_value(&shown).unwrap_or_default());
+    a.publish("thread", json!({"id": id}));
+    if turn.is_some() {
+        a.poke();
+    }
+    ok(json!({"message": shown, "started": turn.is_some()}))
+}
+
 async fn plan_pause(State(a): S, Path(id): Path<String>, Json(b): Json<Value>) -> R {
     a.store.get_thread(&id)?;
     let live: Vec<String> = a

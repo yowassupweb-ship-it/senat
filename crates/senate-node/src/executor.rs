@@ -47,6 +47,20 @@ pub(crate) async fn run_loop(app: Arc<App>, mut stop: watch::Receiver<bool>) {
         if ticks % 30 == 0 {
             crate::skills::sync_routines(&app);
         }
+        // a council does not wait forever for one silent member: after a while the convener goes on with what came
+        if ticks % 15 == 0 {
+            let minutes = app.store.setting("council_minutes").ok().flatten().and_then(|v| v.trim().parse::<i64>().ok()).unwrap_or(10).clamp(2, 120);
+            match app.store.council_deadline(minutes, &app.backend_default()) {
+                Ok(started) if !started.is_empty() => {
+                    for s in &started {
+                        app.publish("thread", json!({"id": s.thread_id}));
+                    }
+                    app.publish("attention", json!({}));
+                }
+                Err(e) => tracing::warn!("срок заседания: {e}"),
+                _ => {}
+            }
+        }
         // work on a schedule: whatever is due becomes a task, and the scheduler below picks it up
         match app.store.fire_due_routines(senate_core::now_ms(), crate::skills::offset_secs()) {
             Ok(fired) if !fired.is_empty() => {

@@ -605,6 +605,7 @@ impl Store {
         // the last one to answer hands the caller all the answers in one turn — not a reaction per answer.
         let pending: i64 = self.lock().query_row(
             "SELECT COUNT(*) FROM messages WHERE thread_id=? AND status IN ('queued','working') AND json_extract(props,'$.asked_by')=?
+             AND json_extract(props,'$.council_late') IS NULL
              AND NOT (coalesce(json_extract(props,'$.inline_wait'),0)=1 AND coalesce(json_extract(props,'$.inline_gave_up'),0)=0)",
             rusqlite::params![thread.id, asker.id],
             |r| r.get(0),
@@ -612,6 +613,61 @@ impl Store {
         if pending > 0 {
             return Ok(None);
         }
+        self.council_turn(&thread, &asker, Some((colleague, reply)), depth, default_backend, &[])
+    }
+
+    /// A council that runs too long: when someone called has been silent for `minutes` while others have answered,
+    /// the caller gets the answers so far, told who has not answered. The late answer comes later as a turn of its own.
+    pub fn council_deadline(&self, minutes: i64, default_backend: &str) -> Result<Vec<Session>> {
+        let cutoff = crate::now_ms() - minutes * 60 * 1000;
+        let late: Vec<(String, String, String, String)> = {
+            let c = self.lock();
+            let mut st = c.prepare(
+                "SELECT m.id, m.thread_id, json_extract(m.props,'$.asked_by'), coalesce(m.author_id,'') FROM messages m
+                 WHERE m.status IN ('queued','working') AND json_extract(m.props,'$.asked_by') IS NOT NULL
+                 AND json_extract(m.props,'$.council_late') IS NULL AND m.created_at<?
+                 AND NOT (coalesce(json_extract(m.props,'$.inline_wait'),0)=1 AND coalesce(json_extract(m.props,'$.inline_gave_up'),0)=0)
+                 AND EXISTS (SELECT 1 FROM messages a WHERE a.thread_id=m.thread_id AND json_extract(a.props,'$.asked_by')=json_extract(m.props,'$.asked_by')
+                   AND a.status IN ('done','failed') AND json_extract(a.props,'$.returned') IS NULL AND a.created_at>?)",
+            )?;
+            let v = st.query_map(rusqlite::params![cutoff, crate::now_ms() - 6 * 3600 * 1000], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            v
+        };
+        let mut by: std::collections::BTreeMap<(String, String), Vec<(String, String)>> = Default::default();
+        for (mid, tid, asker, author) in late {
+            by.entry((tid, asker)).or_default().push((mid, author));
+        }
+        let mut out = Vec::new();
+        for ((tid, asker_id), silent) in by {
+            let (Ok(thread), Ok(asker)) = (self.get_thread(&tid), self.get_agent(&asker_id)) else { continue };
+            if asker.status != "active" {
+                continue;
+            }
+            // only when everyone still working is late: someone who just started may yet answer in time
+            let fresh: i64 = self.lock().query_row(
+                "SELECT COUNT(*) FROM messages WHERE thread_id=? AND status IN ('queued','working') AND json_extract(props,'$.asked_by')=?
+                 AND json_extract(props,'$.council_late') IS NULL AND created_at>=?
+                 AND NOT (coalesce(json_extract(props,'$.inline_wait'),0)=1 AND coalesce(json_extract(props,'$.inline_gave_up'),0)=0)",
+                rusqlite::params![tid, asker_id, cutoff],
+                |r| r.get(0),
+            )?;
+            if fresh > 0 {
+                continue;
+            }
+            let mut names = Vec::new();
+            for (mid, author) in &silent {
+                let _ = self.update_message(mid, None, Some(&serde_json::json!({"council_late": true})), None);
+                names.push(self.get_agent(author).map(|a| a.name).unwrap_or_else(|_| "коллега".into()));
+            }
+            if let Some(s) = self.council_turn(&thread, &asker, None, 1, default_backend, &names)? {
+                out.push(s);
+            }
+        }
+        Ok(out)
+    }
+
+    /// The caller's turn with the council's answers (those not handed over yet); `missing`: who has not answered in time.
+    fn council_turn(&self, thread: &Thread, asker: &Agent, fallback: Option<(&Agent, &str)>, depth: i64, default_backend: &str, missing: &[String]) -> Result<Option<Session>> {
         let since = crate::now_ms() - 6 * 3600 * 1000;
         let answered: Vec<(String, String, String, String, i64)> = {
             let c = self.lock();
@@ -637,20 +693,30 @@ impl Store {
             depth = depth.max(*d);
             let _ = self.update_message(id, None, Some(&serde_json::json!({"returned": true})), None);
         }
+        let mut reply_from = answered.first().map(|x| x.1.clone()).unwrap_or_default();
         if parts.is_empty() {
             // the answer that triggered this was already handed over (or is the only one): say it alone
+            let Some((colleague, reply)) = fallback else { return Ok(None) };
             let reply: String = reply.trim().chars().take(8000).collect();
             parts.push((format!("{} (@{})", colleague.name, colleague.slug), if reply.is_empty() { "(ответа нет)".into() } else { reply }));
             names.push(colleague.name.clone());
+            reply_from = colleague.id.clone();
         }
-        let text = if parts.len() == 1 {
+        let late = if missing.is_empty() {
+            String::new()
+        } else {
+            format!(" Не ответили вовремя: {} — их ответ придёт отдельно, если придёт; решай по тому, что есть.", missing.join(", "))
+        };
+        let council = parts.len() > 1 || !missing.is_empty();
+        let text = if !council {
             format!(
                 "<senate-call>\nКоллега {} ответил на твой запрос. Продолжи работу над исходной задачей с учётом ответа; если вопрос закрыт и дела больше нет — коротко скажи человеку итог.\n</senate-call>\n\n{}",
                 parts[0].0, parts[0].1
             )
         } else {
             let mut t = format!(
-                "<senate-call>\nЗаседание совета: ответили все, кого ты позвал ({}). Сведи ответы: где согласны, где расходятся, что решаешь ты. Продолжи работу над исходной задачей; если вопрос закрыт — коротко скажи человеку итог и решение.\n</senate-call>\n",
+                "<senate-call>\nЗаседание совета: {} ({}).{late} Сведи ответы: где согласны, где расходятся, что решаешь ты. Начни ответ строкой «Решение: …» — одна фраза, её видно в свёрнутом заседании. Затем продолжи работу над исходной задачей; если вопрос закрыт — коротко скажи человеку итог.\n</senate-call>\n",
+                if missing.is_empty() { "ответили все, кого ты позвал" } else { "ответили не все" },
                 parts.len()
             );
             for (who, a) in &parts {
@@ -659,18 +725,73 @@ impl Store {
             t
         };
         let backend = if !asker.model_pref.is_empty() { asker.model_pref.clone() } else { default_backend.to_string() };
-        let prompt = workset::chat_turn_prompt(self, &asker, &thread, &text)?;
+        let prompt = workset::chat_turn_prompt(self, asker, thread, &text)?;
         let msg = self.post_message(
             &thread.id,
             "agent",
             Some(&asker.id),
             "",
-            serde_json::json!({"backend": backend, "effort": thread.effort, "phase": "в очереди", "steps": [], "reply_from": colleague.id, "replies": answered.iter().map(|x| x.0.clone()).collect::<Vec<_>>(), "depth": depth}),
+            serde_json::json!({"backend": backend, "effort": thread.effort, "phase": "в очереди", "steps": [], "reply_from": reply_from,
+                "replies": answered.iter().map(|x| x.0.clone()).collect::<Vec<_>>(), "council": council, "missing": missing, "depth": depth}),
             MessageStatus::Queued,
             None,
         )?;
-        let title = if names.len() > 1 { format!("совет ответил: {}", names.join(", ")) } else { format!("ответил {}", colleague.name) };
+        let title = if council { format!("совет ответил: {}", names.join(", ")) } else { format!("ответил {}", names.join(", ")) };
         Ok(Some(self.create_session(&asker.id, None, Some(&thread.id), Some(&msg.id), &title, &backend, &prompt)?))
+    }
+
+    /// The person steps into a council: their word goes to the convener and to every member as an urgent note
+    /// (read with the next tool result or at the next turn). When the council is over and the convener is free,
+    /// the convener gets a turn at once — the opinion is not left lying.
+    pub fn council_note(&self, thread_id: &str, post: &str, leader_id: &str, members: &[String], text: &str, default_backend: &str) -> Result<(Message, Option<Session>)> {
+        let thread = self.get_thread(thread_id)?;
+        let leader = self.get_agent(leader_id)?;
+        let text: String = text.trim().chars().take(4000).collect();
+        if text.is_empty() {
+            return Err(Error::invalid("пустая реплика"));
+        }
+        let mut to: Vec<String> = vec![leader.id.clone()];
+        for m in members {
+            if !to.contains(m) && self.get_agent(m).is_ok() {
+                to.push(m.clone());
+            }
+        }
+        let shown = self.post_message(&thread.id, "user", None, &text, serde_json::json!({"council_note": {"post": post, "to": to}}), MessageStatus::Done, None)?;
+        let note = format!("Мнение владельца по заседанию совета (созвал {}): {text}", leader.name);
+        let mut leader_note = String::new();
+        for id in &to {
+            // a note from the person is stored as from the recipient themselves (notes need an agent as sender) and read back as the owner's
+            let n = self.add_note(Some(&thread.id), id, id, &note, true)?;
+            if *id == leader.id {
+                leader_note = n;
+            }
+        }
+        let pending: i64 = self.lock().query_row(
+            "SELECT COUNT(*) FROM messages WHERE thread_id=? AND status IN ('queued','working') AND json_extract(props,'$.asked_by')=?
+             AND json_extract(props,'$.council_late') IS NULL",
+            rusqlite::params![thread.id, leader.id],
+            |r| r.get(0),
+        )?;
+        if pending > 0 || self.agent_running(&leader.id)? || self.agent_queued(&leader.id)? {
+            return Ok((shown, None));
+        }
+        let _ = self.mark_note_delivered(&leader_note);
+        let ask = format!(
+            "<senate-call>\nВладелец вмешался в заседание совета, которое ты созвал. Учти его мнение: пересмотри решение, если нужно, и коротко скажи, что меняется. Если нужно снова спросить коллег — спроси.\n</senate-call>\n\n{text}"
+        );
+        let backend = if !leader.model_pref.is_empty() { leader.model_pref.clone() } else { default_backend.to_string() };
+        let prompt = workset::chat_turn_prompt(self, &leader, &thread, &ask)?;
+        let msg = self.post_message(
+            &thread.id,
+            "agent",
+            Some(&leader.id),
+            "",
+            serde_json::json!({"backend": backend, "effort": thread.effort, "phase": "в очереди", "steps": [], "council_reply": post}),
+            MessageStatus::Queued,
+            None,
+        )?;
+        let s = self.create_session(&leader.id, None, Some(&thread.id), Some(&msg.id), "мнение владельца по совету", &backend, &prompt)?;
+        Ok((shown, Some(s)))
     }
 
     /// Called when a node claims a session.

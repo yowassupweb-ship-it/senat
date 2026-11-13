@@ -84,7 +84,7 @@
   <button
     class="pod"
     class:on={isOn(a.id)}
-    style={ring ? `left:${ring.cx + ring.pts[i].x - CARD_W / 2}px;top:${ring.top + ring.pts[i].y - CARD_H / 2}px;width:${CARD_W}px;height:${CARD_H}px;--i:${i}` : `--i:${i}`}
+    style={(ring ? `left:${ring.cx + ring.pts[i].x - CARD_W / 2}px;top:${ring.top + ring.pts[i].y - CARD_H / 2}px;width:${CARD_W}px;height:${CARD_H}px;--i:${i}` : `--i:${i}`) + `;--glow:${a.accent || 'var(--fg)'}`}
     aria-pressed={isOn(a.id)}
     title={w ? `${a.name}: ${w.hint || 'работает'}` : `${a.name}${roleLabel(a) ? ' · ' + roleLabel(a) : ''} · уровень ${a.level ?? 1}`}
     onclick={() => onpick(a.id)}
@@ -146,8 +146,8 @@
   .pod:focus-visible { outline: none; }
   .pod:focus-visible .av::after { content: ''; position: absolute; inset: -6px; border-radius: 50%; box-shadow: 0 0 0 1.5px var(--fg-3); pointer-events: none; z-index: 0; }
   .pod.on { color: var(--fg); }
-  .pod.on .av::after { content: ''; position: absolute; inset: -6px; border-radius: 50%; box-shadow: 0 0 0 2px var(--fg); pointer-events: none; z-index: 0; }
-  .pod.on .nm { text-decoration: underline; text-underline-offset: 3px; text-decoration-thickness: 1.5px; }
+  /* chosen: the avatar glows in its own colour, softly; no ring, no underline */
+  .pod.on .av::after { content: ''; position: absolute; inset: -4px; border-radius: 50%; box-shadow: 0 0 18px 4px color-mix(in srgb, var(--glow) 55%, transparent), 0 0 0 1px color-mix(in srgb, var(--glow) 60%, transparent); pointer-events: none; z-index: 0; transition: box-shadow 0.2s var(--ease); }
   .av { position: relative; display: grid; isolation: isolate; transition: transform 0.12s var(--ease); }
   .av :global(.av) { z-index: 1; }
   .lv { position: absolute; z-index: 3; right: -5px; top: -4px; min-width: 19px; height: 19px; padding: 0 5px; border-radius: 10px; display: grid; place-items: center; font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--bg); background: var(--fg); box-shadow: 0 0 0 2px var(--bg); }

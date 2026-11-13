@@ -1703,7 +1703,7 @@ impl Store {
     pub fn take_notes(&self, agent_id: &str) -> Result<Vec<serde_json::Value>> {
         let c = self.lock();
         let mut st = c.prepare(
-            "SELECT n.id, a.name, a.slug, n.text, n.urgent, n.created_at FROM agent_notes n JOIN agents a ON a.id=n.from_agent WHERE n.to_agent=? AND n.delivered_at IS NULL ORDER BY n.created_at",
+            "SELECT n.id, CASE WHEN n.from_agent=n.to_agent THEN 'Владелец' ELSE coalesce(a.name, 'Владелец') END, CASE WHEN n.from_agent=n.to_agent THEN 'person' ELSE coalesce(a.slug, 'person') END, n.text, n.urgent, n.created_at FROM agent_notes n LEFT JOIN agents a ON a.id=n.from_agent WHERE n.to_agent=? AND n.delivered_at IS NULL ORDER BY n.created_at",
         )?;
         let notes = st
             .query_map([agent_id], |r| {

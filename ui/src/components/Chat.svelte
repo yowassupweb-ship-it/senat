@@ -22,7 +22,7 @@
   // A specialist calling colleagues in is a post with comments: the calls made in a row are one post, and under it —
   // the colleagues' answers (retries included), the notes to them and the caller's reactions, in order. The post
   // stands in the chat where the discussion last moved, so a live one is at the bottom.
-  type Post = { key: string; author: string | null; calls: Message[]; comments: Message[]; at: number };
+  type Post = { key: string; author: string | null; calls: Message[]; comments: Message[]; at: number; decision?: Message };
   // the calls of a post as what was said: one request to several colleagues is one line addressed to all of them
   function asksOf(calls: Message[]): { key: string; to: string[]; text: string }[] {
     const out: { key: string; to: string[]; text: string }[] = [];
@@ -42,6 +42,7 @@
     const taken = new Set<string>();
     const items: Item[] = [];
     let open: Post | null = null;
+    const posts = new Map<string, Post>();
     const P = (m: Message) => (m.props ?? {}) as any;
     for (const m of messages) {
       if (taken.has(m.id)) continue;
@@ -51,6 +52,7 @@
         if (!open || open.author !== m.author_id || m.created_at - open.calls[open.calls.length - 1].created_at > 5 * 60_000) {
           open = { key: m.id, author: m.author_id, calls: [], comments: [], at: m.created_at };
           items.push({ kind: 'post', p: open, at: 0 });
+          posts.set(open.key, open);
         }
         open.calls.push(m);
         taken.add(m.id);
@@ -74,13 +76,27 @@
         taken.add(m.id);
         continue;
       }
+      // the person's word in a council, and the convener's answer to it, stay under that council
+      const into = posts.get(P(m).council_note?.post ?? P(m).council_reply ?? '');
+      if (into) {
+        into.comments.push(m);
+        taken.add(m.id);
+        continue;
+      }
       if (m.author_kind === 'user') open = null;
       items.push({ kind: 'msg', m, at: m.created_at });
     }
     for (const it of items) {
       if (it.kind === 'post') {
         it.p.comments.sort((a, b) => a.created_at - b.created_at);
-        const last = it.p.comments.length ? Math.max(...it.p.comments.map((c) => c.updated_at ?? c.created_at)) : it.p.at;
+        // the convener's summing-up of all the answers is the council's decision: shown above the comments
+        const d = [...it.p.comments].reverse().find((c) => c.author_id === it.p.author && P(c).council && c.status !== 'failed');
+        if (d) {
+          it.p.decision = d;
+          it.p.comments = it.p.comments.filter((c) => c !== d);
+        }
+        const all = d ? [...it.p.comments, d] : it.p.comments;
+        const last = all.length ? Math.max(...all.map((c) => c.updated_at ?? c.created_at)) : it.p.at;
         it.at = Math.max(it.p.at, last);
       }
     }
@@ -161,6 +177,9 @@
   let dockH = $state(0);
   /** Discussions the person folded to one line, by post key. */
   let folded = $state<Record<string, boolean>>({});
+  /** An opinion being written for a council, by post key (absent: the form is closed). */
+  let speak = $state<Record<string, string>>({});
+  let speaking = $state('');
   // Following the output is the reader's choice, made by scrolling: up means "I am reading, leave me alone",
   // all the way down means "follow again". New content growing under them changes neither (it does not move
   // the scroll position), so a long answer arriving never makes it let go, and never snaps it back.
@@ -289,6 +308,32 @@
       upsertMessage(nm);
     } catch (e: any) {
       error = e.message;
+    }
+  }
+
+  // the convener's summing-up in one line: their «Решение: …» line, or the first line of what they said
+  function decisionLine(m: Message): string {
+    const body = (m.body ?? '').trim();
+    if (!body) return m.status === 'working' || m.status === 'queued' ? 'ведущий сводит ответы…' : '';
+    const own = body.match(/^\s*(?:\*\*)?Решение(?:\*\*)?\s*[:：]\s*(?:\*\*)?\s*(.+)$/im);
+    const line = (own ? own[1] : body.split('\n').find((l) => l.trim()) ?? '').replace(/[*_`#>]/g, '').trim();
+    return line.length > 220 ? line.slice(0, 219) + '…' : line;
+  }
+
+  // the person's word in a council: to the convener and every member
+  async function sendOpinion(p: { key: string; author: string | null }, members: string[]) {
+    const text = speak[p.key]?.trim();
+    if (!text || !threadId || !p.author) return;
+    speaking = p.key;
+    error = '';
+    try {
+      const r = await post<{ message: Message }>(`/api/threads/${threadId}/council-note`, { post: p.key, leader: p.author, members, text });
+      upsertMessage(r.message);
+      delete speak[p.key];
+    } catch (e: any) {
+      error = e.message;
+    } finally {
+      speaking = '';
     }
   }
 
@@ -428,31 +473,50 @@
               {@const who = agentById(it.p.author)}
               <!-- the caller's message to colleagues, as a chat message: the same request to several is said once -->
               {@const asks = asksOf(it.p.calls)}
-              {@const called = new Set(asks.flatMap((x) => x.to)).size}
+              {@const members = [...new Set(asks.flatMap((x) => x.to))]}
+              {@const called = members.length}
               {@const shut = !!folded[it.p.key]}
               {@const done = new Set(it.p.comments.filter((c) => c.props.asked_by && (c.status === 'done' || c.status === 'failed')).map((c) => c.author_id)).size}
+              {@const verdict = it.p.decision ? decisionLine(it.p.decision) : ''}
               <section class="post" class:shut aria-label="Заседание совета">
                 <div class="ph">
                   <button class="fold" onclick={() => (folded[it.p.key] = !shut)} aria-expanded={!shut} aria-label={shut ? 'Развернуть обсуждение' : 'Свернуть обсуждение'} title={shut ? 'Развернуть' : 'Свернуть'}><Icon name={shut ? 'right' : 'down'} size={13} /></button>
                   <Avatar name={who?.name} color={who?.accent} size={22} />
                   <b>{who?.name ?? 'Специалист'}</b>
                   <span class="gather"><Icon name="users" size={12} />{called > 1 ? 'Заседание совета' : 'зовёт коллегу'}</span>
-                  {#if !shut && called > 1 && done < called}<span class="faint sum">ответили {done} из {called}, {who?.name ?? 'ведущий'} ждёт всех</span>{/if}
-                  {#if shut}<span class="faint sum">{called} {called === 1 ? 'участник' : called < 5 ? 'участника' : 'участников'} · {it.p.comments.length} {it.p.comments.length % 10 === 1 && it.p.comments.length % 100 !== 11 ? 'ответ' : [2, 3, 4].includes(it.p.comments.length % 10) && ![12, 13, 14].includes(it.p.comments.length % 100) ? 'ответа' : 'ответов'}{#if it.p.comments.some((c) => c.status === 'working' || c.status === 'queued')} · идёт{/if}</span>{/if}
+                  {#if !shut && called > 1 && done < called && !it.p.decision}<span class="faint sum">ответили {done} из {called}, {who?.name ?? 'ведущий'} ждёт всех</span>{/if}
+                  {#if shut && !verdict}<span class="faint sum">{called} {called === 1 ? 'участник' : called < 5 ? 'участника' : 'участников'} · {it.p.comments.length} {it.p.comments.length % 10 === 1 && it.p.comments.length % 100 !== 11 ? 'ответ' : [2, 3, 4].includes(it.p.comments.length % 10) && ![12, 13, 14].includes(it.p.comments.length % 100) ? 'ответа' : 'ответов'}{#if it.p.comments.some((c) => c.status === 'working' || c.status === 'queued')} · идёт{/if}</span>{/if}
                   <time class="faint">{new Date(it.p.calls[0].created_at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}</time>
                 </div>
+                {#if shut && verdict}
+                  <button class="verdict-line" onclick={() => (folded[it.p.key] = false)} title={verdict}><span class="vl">Решение совета</span>{verdict}</button>
+                {/if}
                 {#if !shut}
                 {#each asks as ask (ask.key)}
                   <p class="say">
                     {#each ask.to as id (id)}{@const to = agentById(id)}<span class="mention">@{to?.name ?? 'коллега'}</span>{' '}{/each}{ask.text}
                   </p>
                 {/each}
+                {#if it.p.decision}
+                  <div class="decision" role="group" aria-label="Решение совета">
+                    <div class="dh"><Icon name="check" size={12} />Решение совета{#if it.p.decision.props.missing?.length}<span class="faint"> · не ответили: {it.p.decision.props.missing.join(', ')}</span>{/if}</div>
+                    <MessageView m={it.p.decision} nested onanswer={answer} onstop={stop} onretry={retry} onimage={(a) => (lightbox = a)} />
+                  </div>
+                {/if}
                 {#if it.p.comments.length}
                   <div class="comments" role="group" aria-label="Ответы и реплики">
                     {#each it.p.comments as c (c.id)}
                       <MessageView m={c} nested onanswer={answer} onstop={stop} onretry={retry} onimage={(a) => (lightbox = a)} />
                     {/each}
                   </div>
+                {/if}
+                {#if speak[it.p.key] !== undefined}
+                  <form class="opinion" onsubmit={(e) => { e.preventDefault(); sendOpinion(it.p, members); }}>
+                    <textarea rows="2" bind:value={speak[it.p.key]} placeholder="Ваше мнение — уйдёт ведущему и всем участникам" aria-label="Ваше мнение для заседания" onkeydown={(e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); sendOpinion(it.p, members); } if (e.key === 'Escape') delete speak[it.p.key]; }}></textarea>
+                    <div class="oa"><button type="button" class="btn sm" onclick={() => delete speak[it.p.key]}>Отмена</button><button type="submit" class="btn sm primary" disabled={!speak[it.p.key]?.trim() || speaking === it.p.key}>{speaking === it.p.key ? 'Отправляю…' : 'Отправить'}</button></div>
+                  </form>
+                {:else}
+                  <button class="add-opinion" onclick={() => (speak[it.p.key] = '')}><Icon name="reply" size={12} />Добавить мнение</button>
                 {/if}
                 {/if}
               </section>
@@ -640,6 +704,79 @@
   .mention {
     font-weight: 600;
     color: var(--fg);
+  }
+  .decision {
+    margin: 6px 0 6px 11px;
+    padding: 6px 10px 2px 16px;
+    border-left: 2px solid var(--fg-3);
+    background: var(--bg-hover);
+    border-radius: 0 var(--radius) var(--radius) 0;
+  }
+  .dh {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--fg-2);
+  }
+  .verdict-line {
+    display: block;
+    width: calc(100% - 30px);
+    margin: 0 0 6px 30px;
+    text-align: left;
+    font-size: 13px;
+    color: var(--fg);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .verdict-line .vl {
+    font-weight: 600;
+    color: var(--fg-2);
+    margin-right: 6px;
+  }
+  .add-opinion {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    margin: 2px 0 0 30px;
+    padding: 2px 8px;
+    border-radius: 6px;
+    font-size: 12px;
+    color: var(--fg-3);
+  }
+  .add-opinion:hover {
+    background: var(--bg-hover);
+    color: var(--fg);
+  }
+  .add-opinion:focus-visible,
+  .verdict-line:focus-visible {
+    outline: 2px solid var(--focus, var(--fg-2));
+    outline-offset: 1px;
+  }
+  .opinion {
+    margin: 4px 0 0 30px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .opinion textarea {
+    width: 100%;
+    resize: vertical;
+    min-height: 48px;
+    padding: 6px 8px;
+    border-radius: var(--radius);
+    border: 1px solid var(--line-strong);
+    background: var(--bg-raised);
+    color: var(--fg);
+    font: inherit;
+    font-size: 13px;
+  }
+  .oa {
+    display: flex;
+    justify-content: flex-end;
+    gap: 6px;
   }
   .comments {
     margin: 6px 0 4px 11px;
