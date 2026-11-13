@@ -513,7 +513,7 @@ fn the_agent_is_shown_what_the_person_attached() {
     // a picture with a caption
     let d = st.send_chat(ChatSend { thread_id: t.id.clone(), text: "Что не так с версткой?".into(), attachments: vec![shot.clone()], ..Default::default() }, "mock").unwrap();
     let prompt = &d.sessions[0].prompt;
-    assert!(prompt.contains("C:/Senate/uploads/a1/скрин.png") && prompt.contains("инструментом Read"), "{prompt}");
+    assert!(prompt.contains("C:/Senate/uploads/a1/скрин.png") && prompt.contains("инструментом чтения файлов"), "{prompt}");
     assert_eq!(d.user_message.props["attachments"][0]["name"], "скрин.png", "kept with the message");
     // a picture alone, without a word
     let d2 = st.send_chat(ChatSend { thread_id: t.id.clone(), text: String::new(), attachments: vec![shot], ..Default::default() }, "mock").unwrap();

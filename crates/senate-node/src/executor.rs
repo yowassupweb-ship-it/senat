@@ -236,7 +236,7 @@ pub(crate) async fn execute(app: Arc<App>, s: Session) {
     if !local {
         // on a computer its app adds this itself; on the node, the node does
         let env = tokio::task::spawn_blocking(crate::workspace::environment).await.unwrap_or_default();
-        system_prompt += &crate::workspace::environment_block("сервер (нода Senate)", &cwd, &env);
+        system_prompt += &crate::workspace::environment_block_for("сервер (нода Senate)", &cwd, &env, &s.backend);
         if app.cfg.bind.ip().is_unspecified() {
             system_prompt += "Это сервер, а не компьютер человека: его localhost человеку напрямую не открыть. Запустил страницу или dev-сервер — покажи через `senate_preview` (http://localhost:ПОРТ): кнопка откроет её у человека через Senate. Не проси человека открыть localhost и не говори, что он «на сервере недоступен». Папки коллег рядом с твоей: ../<username>.\n";
         }
@@ -392,6 +392,10 @@ pub(crate) async fn execute(app: Arc<App>, s: Session) {
         }
     }
     let body = if outcome.text.trim().is_empty() { None } else { Some(outcome.text.as_str()) };
+    // an answer with something in it is read at the end of the chat, not where its turn happened to start
+    if status != MessageStatus::Cancelled && (body.is_some() || outcome.failure.is_some()) {
+        let _ = store.move_answer_to_end(&msg_id);
+    }
     if let Ok(m) = store.update_message(&msg_id, body, Some(&props), Some(status)) {
         app.publish("message", serde_json::to_value(&m).unwrap_or_default());
     }
@@ -447,7 +451,7 @@ pub(crate) async fn execute(app: Arc<App>, s: Session) {
     if let Some(oid) = &s.obligation_id {
         let spent = outcome.work.input_tokens.saturating_sub(outcome.work.cached_input_tokens) + outcome.work.output_tokens;
         let _ = store.add_spent_tokens(oid, spent as i64);
-        settle_obligation(&app, oid, &s, status);
+        settle_obligation(&app, oid, &s, status, outcome.failure.as_deref());
     }
     app.publish("session", json!({"id": s.id, "status": sess_status.as_str()}));
     app.publish("attention", json!({}));
@@ -462,7 +466,9 @@ pub(crate) async fn execute(app: Arc<App>, s: Session) {
 
 /// What happens to an obligation when its session ends. The environment never lets work vanish
 /// silently, and never loops on a session that makes no progress.
-fn settle_obligation(app: &App, oid: &str, s: &Session, status: MessageStatus) {
+fn settle_obligation(app: &App, oid: &str, s: &Session, status: MessageStatus, error: Option<&str>) {
+    // what actually went wrong travels with the task: the blocker and the history say it, not just "it failed"
+    let why = error.map(|e| e.trim()).filter(|e| !e.is_empty()).map(|e| format!(" Причина: {}", e.chars().take(400).collect::<String>())).unwrap_or_default();
     let store = &app.store;
     let Ok(o) = store.get_obligation(oid) else { return };
     if o.state != ObligationState::Running {
@@ -477,9 +483,9 @@ fn settle_obligation(app: &App, oid: &str, s: &Session, status: MessageStatus) {
         MessageStatus::Failed => {
             let recent_failures = sessions.iter().take(3).filter(|x| x.status == SessionStatus::Failed || x.id == s.id).count();
             if recent_failures >= 2 {
-                block("Две сессии подряд завершились ошибкой — нужно вмешательство (проверьте вход в бэкенд и доступы).".into());
+                block(format!("Две сессии подряд завершились ошибкой — нужно вмешательство.{why} Что сделать: устранить причину и вернуть задачу в работу (или сменить исполнителю модель)."));
             } else {
-                let _ = store.transition(oid, ObligationState::Accepted, TransitionArgs { note: "сессия упала — повтор".into(), ..Default::default() }, "system");
+                let _ = store.transition(oid, ObligationState::Accepted, TransitionArgs { note: format!("сессия упала — повтор.{why}"), ..Default::default() }, "system");
             }
         }
         _ => {

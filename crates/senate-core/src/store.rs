@@ -1016,6 +1016,17 @@ impl Store {
     }
 
     /// Newest `limit` messages (optionally those before a given message), oldest first.
+    /// A long turn's answer was placed where it started; by the time it is ready, other messages may stand below it.
+    /// It moves to the end then, so the person finds it where they read last. Returns whether it moved.
+    pub fn move_answer_to_end(&self, id: &str) -> Result<bool> {
+        let c = self.lock();
+        let n = c.execute(
+            "UPDATE messages SET created_at=?2 WHERE id=?1 AND EXISTS (SELECT 1 FROM messages o WHERE o.thread_id=messages.thread_id AND o.created_at > messages.created_at AND o.id != messages.id)",
+            params![id, now_ms()],
+        )?;
+        Ok(n > 0)
+    }
+
     pub fn list_messages(&self, thread_id: &str, before: Option<&str>, limit: i64) -> Result<Vec<Message>> {
         let c = self.lock();
         let mut st = c.prepare(&format!(

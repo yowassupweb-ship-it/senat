@@ -20,7 +20,11 @@
     onretry,
     onimage,
     onreply,
-  }: { m: Message; onanswer: (m: Message, allow: boolean, always?: boolean | 'dir') => void; onstop: (m: Message) => void; onretry: (m: Message) => void; onimage?: (a: { url: string; name: string }) => void; onreply?: (m: Message) => void } = $props();
+    nested = false,
+  }: { m: Message; onanswer: (m: Message, allow: boolean, always?: boolean | 'dir') => void; onstop: (m: Message) => void; onretry: (m: Message) => void; onimage?: (a: { url: string; name: string }) => void; onreply?: (m: Message) => void; nested?: boolean } = $props();
+  // a comment under a call: compact, a long answer folded to a few lines until opened
+  let unfolded = $state(false);
+  const foldable = $derived(nested && (m.body?.length ?? 0) > 420);
 
   const agent = $derived(agentById(m.author_id));
   const working = $derived(m.status === 'working' || m.status === 'queued');
@@ -148,7 +152,7 @@
     </div>
   </div>
 {:else}
-  <div class="msg agent" data-mid={m.id} data-status={m.status} class:handoff={!!p.call}>
+  <div class="msg agent" data-mid={m.id} data-status={m.status} class:handoff={!!p.call} class:nested>
     {#if p.call}
       {@const to = agentById(p.call.to)}
       <div class="relay">
@@ -203,7 +207,8 @@
       </div>
     {/if}
     {#if html}
-      <div class="md" use:enhance>{@html html}</div>
+      <div class="md" class:folded={foldable && !unfolded} use:enhance>{@html html}</div>
+      {#if foldable}<button class="unfold" onclick={() => (unfolded = !unfolded)}>{unfolded ? 'Свернуть' : 'Показать полностью'}</button>{/if}
       {#if working}
         <div class="status" role="status">
           <span class="faint">{p.phase || 'пишет'}… {elapsed} с</span>
@@ -371,6 +376,24 @@
   }
   .md {
     overflow-wrap: anywhere;
+  }
+  /* a comment under a call */
+  .msg.nested {
+    font-size: 13px;
+    padding-top: 6px;
+    padding-bottom: 6px;
+  }
+  .md.folded {
+    max-height: 7.6em;
+    overflow: hidden;
+  }
+  .unfold {
+    margin-top: 4px;
+    font-size: 12px;
+    color: var(--fg-3);
+  }
+  .unfold:hover {
+    color: var(--fg);
   }
   .md :global(p) {
     margin: 0 0 0.7em;

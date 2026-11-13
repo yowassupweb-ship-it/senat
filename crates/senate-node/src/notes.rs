@@ -43,7 +43,13 @@ fn message_of_turn(a: &App, ctx: &ToolCtx) -> Option<String> {
 }
 
 pub(crate) async fn ask_colleague(a: &Arc<App>, ctx: &ToolCtx, args: &Value) -> Result<Value, String> {
-    let wait = args["wait_seconds"].as_u64().unwrap_or(120).clamp(10, 300);
+    let mut wait = args["wait_seconds"].as_u64().unwrap_or(120).clamp(10, 300);
+    // a colleague already busy will not answer within minutes: do not hold the asker for long, say so
+    let target = a.store.get_agent(args["to"].as_str().unwrap_or("")).map_err(|_| format!("нет коллеги «{}»: посмотри slug в senate_colleagues", args["to"].as_str().unwrap_or("")))?;
+    let busy = a.store.agent_running(&target.id).unwrap_or(false) || a.store.agent_queued(&target.id).unwrap_or(false);
+    if busy {
+        wait = wait.min(30);
+    }
     let question = args["question"].as_str().unwrap_or("").to_string();
     let r = tools::call(&a.store, ctx, "senate_call_colleague", &json!({"to": args["to"], "request": question})).map_err(|e| e.to_string())?;
     let Some(mid) = r["message_id"].as_str().map(String::from) else { return Ok(r) };
@@ -65,8 +71,8 @@ pub(crate) async fn ask_colleague(a: &Arc<App>, ctx: &ToolCtx, args: &Value) -> 
             }
             if Instant::now() >= until {
                 let _ = a.store.update_message(&mid, None, Some(&json!({"inline_gave_up": true})), None);
-                let state = if m.status == MessageStatus::Queued { "ещё не начал (занят другим)" } else { "ещё работает" };
-                return Ok(json!({"status": "no_answer_yet", "colleague": state, "note": format!("за {wait} с ответа нет: коллега {state}. Продолжай по своему решению; его ответ придёт к тебе отдельным ходом.")}));
+                let state = if m.status == MessageStatus::Queued { "занят другой работой и ещё не начал" } else { "ещё работает над ответом" };
+                return Ok(json!({"status": if busy || m.status == MessageStatus::Queued { "busy" } else { "no_answer_yet" }, "colleague": state, "note": format!("за {wait} с ответа нет: {} {state}. Продолжай по своему решению; его ответ придёт к тебе отдельным ходом.", target.name)}));
             }
         }
         tokio::time::sleep(Duration::from_millis(1500)).await;

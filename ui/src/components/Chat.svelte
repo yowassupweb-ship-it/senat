@@ -18,6 +18,27 @@
   const thread = $derived(threadById(threadId));
   const project = $derived(projectById(thread?.project_id ?? projectId));
   const messages = $derived(threadId ? (app.messages[threadId] ?? []) : []);
+  // A colleague's answer to a call is a comment under that call, not a message of its own down the chat; a retried
+  // answer joins it there too.
+  const threads = $derived.by(() => {
+    const byId = new Map(messages.map((m) => [m.id, m]));
+    const under = new Map<string, Message[]>();
+    const nested = new Set<string>();
+    for (const m of messages) {
+      let id: string | undefined = (m.props as any)?.call?.answer;
+      const list: Message[] = [];
+      const seen = new Set<string>();
+      while (id && byId.has(id) && !seen.has(id)) {
+        seen.add(id);
+        const a = byId.get(id)!;
+        list.push(a);
+        nested.add(a.id);
+        id = (a.props as any)?.retried_by;
+      }
+      if (list.length) under.set(m.id, list);
+    }
+    return { under, nested };
+  });
   const lastAgent = $derived([...messages].reverse().find((m) => m.author_kind === 'agent'));
   const isLive = (m: Message) => m.author_kind === 'agent' && (m.status === 'working' || m.status === 'queued');
   // Anyone still working in this chat (not only the last reply): several specialists can run at once.
@@ -349,8 +370,15 @@
           {#if loading}
             <p class="faint center">Загрузка…</p>
           {/if}
-          {#each messages as m (m.id)}
+          {#each messages.filter((x) => !threads.nested.has(x.id)) as m (m.id)}
             <MessageView {m} onanswer={answer} onstop={stop} onretry={retry} onimage={(a) => (lightbox = a)} onreply={isForum ? undefined : reply} />
+            {#if threads.under.get(m.id)?.length}
+              <div class="comments" role="group" aria-label="Ответ на вызов">
+                {#each threads.under.get(m.id) ?? [] as c (c.id)}
+                  <MessageView m={c} nested onanswer={answer} onstop={stop} onretry={retry} onimage={(a) => (lightbox = a)} />
+                {/each}
+              </div>
+            {/if}
           {/each}
           {#if !loading && !messages.length}
             <p class="faint center">Здесь пока пусто. Напишите первое сообщение.</p>
@@ -456,6 +484,14 @@
     flex: 1;
     overflow-y: auto;
     padding: 0 20px;
+  }
+  .comments {
+    margin: -2px 0 10px 11px;
+    padding-left: 18px;
+    border-left: 2px solid var(--line);
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
   }
   .col {
     max-width: 820px;

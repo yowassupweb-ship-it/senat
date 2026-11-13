@@ -505,7 +505,7 @@ async fn handle_job(hub: String, token: String, data_dir: PathBuf, job: Value) {
         pull_workspaces(&long, &hub, &token, &ws_root).await;
     }
     // where the specialist is and what this computer has
-    prompt += &crate::workspace::environment_block(job["machine_name"].as_str().unwrap_or("этот компьютер"), &cwd, &job["machine_env"]);
+    prompt += &crate::workspace::environment_block_for(job["machine_name"].as_str().unwrap_or("этот компьютер"), &cwd, &job["machine_env"], job["backend"].as_str().unwrap_or(""));
     if private {
         prompt += &format!(
             "Это твоя личная папка; она общая с сервером: перед работой сюда пришли файлы с сервера, после работы твои изменения уйдут обратно. Папки коллег рядом: {}\\<username> (например, ..\\dev). Их не меняй — скопируй к себе, если нужно править.\n",

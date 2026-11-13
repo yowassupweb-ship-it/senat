@@ -524,7 +524,7 @@ impl Store {
                 target.name
             )));
         }
-        self.post_message(&thread.id, "agent", Some(&caller.id), &format!("→ @{}: {}", target.slug, request.trim()), serde_json::json!({"call": {"to": target.id}}), MessageStatus::Done, None)?;
+        let call_msg = self.post_message(&thread.id, "agent", Some(&caller.id), &format!("→ @{}: {}", target.slug, request.trim()), serde_json::json!({"call": {"to": target.id}}), MessageStatus::Done, None)?;
         let backend = if !target.model_pref.is_empty() { target.model_pref.clone() } else { default_backend.to_string() };
         let asked = format!(
             "<senate-call>\nТебя позвал в этот разговор коллега {} (@{}). Он продолжает свою работу и ждёт твой ответ. Ответь ему по делу и коротко; если нужно что-то сделать в твоей зоне — сделай и сообщи результат.\n</senate-call>\n\n{}",
@@ -542,6 +542,8 @@ impl Store {
             None,
         )?;
         let s = self.create_session(&target.id, None, Some(&thread.id), Some(&msg.id), &format!("позвал {}", caller.name), &backend, &prompt)?;
+        // the call knows its answer: the chat shows the answer as a comment under the call
+        self.update_message(&call_msg.id, None, Some(&serde_json::json!({"call": {"to": target.id, "answer": msg.id}})), None)?;
         Ok(serde_json::json!({"status": "queued", "to": target.slug, "message_id": msg.id, "session_id": s.id}))
     }
 

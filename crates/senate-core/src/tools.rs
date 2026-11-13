@@ -428,7 +428,10 @@ fn call_inner(store: &Store, ctx: &ToolCtx, name: &str, a: &Value, bypass: bool)
                 "id": o.id, "title": o.title, "state": o.state.as_str(),
                 "owner": o.owner_id.as_ref().and_then(|i| slugs.get(i)).cloned().unwrap_or_default(),
                 "project": o.project_id.as_ref().and_then(|i| projects.get(i)).cloned().unwrap_or_default(),
-                "next_step": o.next_step, "result": o.result, "criteria": o.criteria
+                "next_step": o.next_step, "result": o.result, "criteria": o.criteria,
+                // why it stands still, right in the list: no digging through the history
+                "blocker": if o.state == ObligationState::Blocked { json!(o.blocker) } else { Value::Null },
+                "waiting_for": o.wait_condition.as_ref().map(|w| json!(w)).unwrap_or(Value::Null),
             })).collect::<Vec<_>>()))
         }
         "senate_obligation_create" => {

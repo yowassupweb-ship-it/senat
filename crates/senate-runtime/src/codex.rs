@@ -12,11 +12,20 @@ const RUN_LIMIT: Duration = Duration::from_secs(2 * 60 * 60);
 /// Codex cannot ask in headless mode, so its sandbox decides alone. "Под ключ" means the person chose not to be
 /// asked: the folder fence goes too, otherwise work outside the project folder fails with nobody to ask.
 fn sandbox(mode: PermissionMode) -> &'static str {
+    // Inside a container Codex's own sandbox cannot start (bubblewrap: "No permissions to create a new namespace"),
+    // and every shell call fails. The container is the fence there; Senate's modes still hold through the prompt.
+    if in_container() {
+        return "danger-full-access";
+    }
     match mode {
         PermissionMode::Plan | PermissionMode::Ask => "read-only",
         PermissionMode::Edit => "workspace-write",
         PermissionMode::Auto => "danger-full-access",
     }
+}
+
+fn in_container() -> bool {
+    cfg!(target_os = "linux") && (std::path::Path::new("/.dockerenv").exists() || std::fs::read_to_string("/proc/1/cgroup").map(|c| c.contains("docker") || c.contains("containerd")).unwrap_or(false))
 }
 
 fn hint(name: &str, input: &Value) -> String {
@@ -124,7 +133,11 @@ pub async fn run(spec: RunSpec, _approver: &dyn Approver, tx: EventTx, mut cance
         Err(e) => return Outcome { failure: Some(format!("Не удалось запустить Codex: {e}")), ..Default::default() },
     };
     // Codex exec has no separate system prompt: the role goes first in a new session's message.
-    let prompt = if resumed || spec.system_prompt.is_empty() { spec.prompt.clone() } else { format!("{}\n\n---\n\n{}", spec.system_prompt, spec.prompt) };
+    let mut prompt = if resumed || spec.system_prompt.is_empty() { spec.prompt.clone() } else { format!("{}\n\n---\n\n{}", spec.system_prompt, spec.prompt) };
+    // no read-only sandbox in a container: the mode is said in words, and the person's mode stands
+    if in_container() && matches!(spec.mode, PermissionMode::Plan | PermissionMode::Ask) {
+        prompt = format!("[Режим «{}»: файлы и систему не меняй, только читай и исследуй; изменения — после согласия человека.]\n\n{prompt}", if spec.mode == PermissionMode::Plan { "План" } else { "Спрашивать" });
+    }
     write_stdin(&mut proc, &prompt).await;
 
     let mut t = Tracker::new(tx, spec.model().unwrap_or(""));

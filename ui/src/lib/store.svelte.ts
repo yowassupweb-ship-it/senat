@@ -224,8 +224,14 @@ export function upsertMessage(m: Message) {
     return;
   }
   held.delete(m.id);
-  if (i >= 0) list[i] = m;
-  else list.push(m);
+  // a finished answer may move to the end of the chat (the node gives it its finishing time): keep the order
+  if (i >= 0 && list[i].created_at === m.created_at) list[i] = m;
+  else {
+    if (i >= 0) list.splice(i, 1);
+    let at = list.length;
+    while (at > 0 && list[at - 1].created_at > m.created_at) at--;
+    list.splice(at, 0, m);
+  }
 }
 
 export async function loadGit(projectId: string) {
