@@ -222,13 +222,21 @@ pub fn session_is_lost(o: &Outcome) -> bool {
             || (l.contains("session") && (l.contains("not found") || l.contains("no such") || l.contains("does not exist"))))
 }
 
+/// A continued session that failed before doing anything — no text, not one turn, nothing stopped it. Claude Code
+/// answers a session it cannot load with a bare `error_during_execution`, not with "not found": a fresh session is
+/// the cure for that too, and costs nothing when the failure was something else (it will fail the same way).
+pub fn resume_died_at_once(o: &Outcome) -> bool {
+    let Some(f) = o.failure.as_deref() else { return false };
+    o.text.is_empty() && !o.stopped && o.work.turns == 0 && o.work.output_tokens == 0 && f.contains("error_during_execution")
+}
+
 /// Run one turn. A resume that hits a held session is retried once after a short wait (an orphan exits when its
 /// pipes close); if the session is still held, the turn runs in a fresh session rather than failing — the
 /// system prompt travels with it, so the specialist is still itself. A session the CLI has lost altogether goes
 /// straight to a fresh one: there is nothing to wait for, and the person should not see an error for it.
 pub async fn run(spec: RunSpec, approver: &dyn Approver, tx: EventTx, cancel: CancelRx) -> Outcome {
     let mut out = run_once(spec.clone(), approver, tx.clone(), cancel.clone()).await;
-    if spec.resume.is_some() && session_is_lost(&out) && !*cancel.borrow() {
+    if spec.resume.is_some() && (session_is_lost(&out) || resume_died_at_once(&out)) && !*cancel.borrow() {
         let mut fresh = spec;
         fresh.resume = None;
         return run_once(fresh, approver, tx, cancel).await;

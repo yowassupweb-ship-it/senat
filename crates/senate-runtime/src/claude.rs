@@ -141,7 +141,38 @@ fn control_error(request_id: &str, msg: &str) -> String {
     format!("{}\n", json!({"type": "control_response", "response": {"subtype": "error", "request_id": request_id, "error": msg}}))
 }
 
+/// Claude Code keeps a session as `~/.claude/projects/<folder, every other character a dash>/<id>.jsonl` and loads
+/// it only for that folder. A session that is not there for this folder (it was made on another computer, or in
+/// another folder) cannot be continued; `None` when it cannot tell (no projects folder at all).
+pub(crate) fn session_here(cwd: &std::path::Path, id: &str) -> Option<bool> {
+    let home = std::env::var_os("CLAUDE_CONFIG_DIR")
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(|h| std::path::PathBuf::from(h).join(".claude")))?;
+    let projects = home.join("projects");
+    if !projects.is_dir() {
+        return None;
+    }
+    let real = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+    let real = real.to_string_lossy().trim_start_matches(r"\\?\").to_string();
+    let enc: String = real.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
+    let file = format!("{id}.jsonl");
+    if projects.join(&enc).join(&file).exists() {
+        return Some(true);
+    }
+    // long folder names are shortened by the CLI: accept a folder that starts the same way
+    let found = std::fs::read_dir(&projects).ok()?.flatten().any(|e| {
+        let n = e.file_name().to_string_lossy().to_string();
+        enc.len() > 80 && n.len() >= 80 && enc.starts_with(&n[..80]) && e.path().join(&file).exists()
+    });
+    Some(found)
+}
+
 pub async fn run(spec: RunSpec, approver: &dyn Approver, tx: EventTx, cancel: CancelRx) -> Outcome {
+    // a session this computer does not have for this folder: start fresh at once instead of failing first
+    let spec = match &spec.resume {
+        Some(id) if session_here(&spec.cwd, id) == Some(false) => RunSpec { resume: None, ..spec },
+        _ => spec,
+    };
     let resumed = spec.resume.is_some();
     let first = attempt(&spec, approver, &tx, cancel.clone()).await;
     // A chat whose CLI session was lost (reinstall, cleaned profile) continues as a new session.
@@ -537,5 +568,36 @@ fn handle_event(ev: &Value, tx: &EventTx, st: &mut State) {
             }
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_session_is_continued_only_where_claude_keeps_it() {
+        let root = std::env::temp_dir().join(format!("senate-claude-{}", std::process::id()));
+        let cwd = root.join("work").join("crm");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let cfg = root.join("cfg");
+        std::fs::create_dir_all(cfg.join("projects")).unwrap();
+        std::env::set_var("CLAUDE_CONFIG_DIR", &cfg);
+        // a session from another computer: not here
+        assert_eq!(session_here(&cwd, "1f39af27"), Some(false));
+        // the CLI's own folder for this cwd holds it: here
+        let real = std::fs::canonicalize(&cwd).unwrap().to_string_lossy().trim_start_matches(r"\\?\").to_string();
+        let enc: String = real.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
+        std::fs::create_dir_all(cfg.join("projects").join(&enc)).unwrap();
+        std::fs::write(cfg.join("projects").join(&enc).join("1f39af27.jsonl"), "{}").unwrap();
+        assert_eq!(session_here(&cwd, "1f39af27"), Some(true));
+        std::env::remove_var("CLAUDE_CONFIG_DIR");
+        let _ = std::fs::remove_dir_all(&root);
+
+        // and a resume that dies before doing anything is retried fresh
+        let died = crate::Outcome { failure: Some("error_during_execution".into()), ..Default::default() };
+        assert!(crate::resume_died_at_once(&died));
+        let worked = crate::Outcome { failure: Some("error_during_execution".into()), text: "часть ответа".into(), ..Default::default() };
+        assert!(!crate::resume_died_at_once(&worked));
     }
 }
