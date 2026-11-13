@@ -601,11 +601,63 @@ impl Store {
         if asker.status != "active" {
             return Ok(None);
         }
-        let reply: String = reply.trim().chars().take(8000).collect();
-        let text = format!(
-            "<senate-call>\nКоллега {} (@{}) ответил на твой запрос. Продолжи работу над исходной задачей с учётом ответа; если вопрос закрыт и дела больше нет — коротко скажи человеку итог.\n</senate-call>\n\n{}",
-            colleague.name, colleague.slug, if reply.is_empty() { "(ответа нет)".to_string() } else { reply }
-        );
+        // A council: the caller called several colleagues. While some of them still work, this answer waits;
+        // the last one to answer hands the caller all the answers in one turn — not a reaction per answer.
+        let pending: i64 = self.lock().query_row(
+            "SELECT COUNT(*) FROM messages WHERE thread_id=? AND status IN ('queued','working') AND json_extract(props,'$.asked_by')=?
+             AND NOT (coalesce(json_extract(props,'$.inline_wait'),0)=1 AND coalesce(json_extract(props,'$.inline_gave_up'),0)=0)",
+            rusqlite::params![thread.id, asker.id],
+            |r| r.get(0),
+        )?;
+        if pending > 0 {
+            return Ok(None);
+        }
+        let since = crate::now_ms() - 6 * 3600 * 1000;
+        let answered: Vec<(String, String, String, String, i64)> = {
+            let c = self.lock();
+            let mut st = c.prepare(
+                "SELECT id, coalesce(author_id,''), body, status, coalesce(json_extract(props,'$.depth'),1) FROM messages
+                 WHERE thread_id=? AND json_extract(props,'$.asked_by')=? AND status IN ('done','failed') AND created_at>?
+                 AND json_extract(props,'$.returned') IS NULL
+                 AND NOT (coalesce(json_extract(props,'$.inline_wait'),0)=1 AND coalesce(json_extract(props,'$.inline_gave_up'),0)=0)
+                 ORDER BY created_at LIMIT 8",
+            )?;
+            let v = st.query_map(rusqlite::params![thread.id, asker.id, since], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            v
+        };
+        let mut parts: Vec<(String, String)> = Vec::new(); // (who, answer)
+        let mut names: Vec<String> = Vec::new();
+        let mut depth = depth;
+        for (id, author, body, status, d) in &answered {
+            let who = self.get_agent(author).ok();
+            let text = if status == "done" && !body.trim().is_empty() { body.trim().to_string() } else if status == "done" { "(ответа нет)".into() } else { "Не удалось ответить.".into() };
+            let label = who.as_ref().map(|a| format!("{} (@{})", a.name, a.slug)).unwrap_or_else(|| "коллега".into());
+            names.push(who.map(|a| a.name).unwrap_or_default());
+            parts.push((label, text.chars().take(6000).collect()));
+            depth = depth.max(*d);
+            let _ = self.update_message(id, None, Some(&serde_json::json!({"returned": true})), None);
+        }
+        if parts.is_empty() {
+            // the answer that triggered this was already handed over (or is the only one): say it alone
+            let reply: String = reply.trim().chars().take(8000).collect();
+            parts.push((format!("{} (@{})", colleague.name, colleague.slug), if reply.is_empty() { "(ответа нет)".into() } else { reply }));
+            names.push(colleague.name.clone());
+        }
+        let text = if parts.len() == 1 {
+            format!(
+                "<senate-call>\nКоллега {} ответил на твой запрос. Продолжи работу над исходной задачей с учётом ответа; если вопрос закрыт и дела больше нет — коротко скажи человеку итог.\n</senate-call>\n\n{}",
+                parts[0].0, parts[0].1
+            )
+        } else {
+            let mut t = format!(
+                "<senate-call>\nЗаседание совета: ответили все, кого ты позвал ({}). Сведи ответы: где согласны, где расходятся, что решаешь ты. Продолжи работу над исходной задачей; если вопрос закрыт — коротко скажи человеку итог и решение.\n</senate-call>\n",
+                parts.len()
+            );
+            for (who, a) in &parts {
+                t += &format!("\n### {who}\n{a}\n");
+            }
+            t
+        };
         let backend = if !asker.model_pref.is_empty() { asker.model_pref.clone() } else { default_backend.to_string() };
         let prompt = workset::chat_turn_prompt(self, &asker, &thread, &text)?;
         let msg = self.post_message(
@@ -613,11 +665,12 @@ impl Store {
             "agent",
             Some(&asker.id),
             "",
-            serde_json::json!({"backend": backend, "effort": thread.effort, "phase": "в очереди", "steps": [], "reply_from": colleague.id, "depth": depth}),
+            serde_json::json!({"backend": backend, "effort": thread.effort, "phase": "в очереди", "steps": [], "reply_from": colleague.id, "replies": answered.iter().map(|x| x.0.clone()).collect::<Vec<_>>(), "depth": depth}),
             MessageStatus::Queued,
             None,
         )?;
-        Ok(Some(self.create_session(&asker.id, None, Some(&thread.id), Some(&msg.id), &format!("ответил {}", colleague.name), &backend, &prompt)?))
+        let title = if names.len() > 1 { format!("совет ответил: {}", names.join(", ")) } else { format!("ответил {}", colleague.name) };
+        Ok(Some(self.create_session(&asker.id, None, Some(&thread.id), Some(&msg.id), &title, &backend, &prompt)?))
     }
 
     /// Called when a node claims a session.

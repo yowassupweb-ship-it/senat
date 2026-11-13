@@ -430,12 +430,14 @@
               {@const asks = asksOf(it.p.calls)}
               {@const called = new Set(asks.flatMap((x) => x.to)).size}
               {@const shut = !!folded[it.p.key]}
+              {@const done = new Set(it.p.comments.filter((c) => c.props.asked_by && (c.status === 'done' || c.status === 'failed')).map((c) => c.author_id)).size}
               <section class="post" class:shut aria-label="Заседание совета">
                 <div class="ph">
                   <button class="fold" onclick={() => (folded[it.p.key] = !shut)} aria-expanded={!shut} aria-label={shut ? 'Развернуть обсуждение' : 'Свернуть обсуждение'} title={shut ? 'Развернуть' : 'Свернуть'}><Icon name={shut ? 'right' : 'down'} size={13} /></button>
                   <Avatar name={who?.name} color={who?.accent} size={22} />
                   <b>{who?.name ?? 'Специалист'}</b>
                   <span class="gather"><Icon name="users" size={12} />{called > 1 ? 'Заседание совета' : 'зовёт коллегу'}</span>
+                  {#if !shut && called > 1 && done < called}<span class="faint sum">ответили {done} из {called}, {who?.name ?? 'ведущий'} ждёт всех</span>{/if}
                   {#if shut}<span class="faint sum">{called} {called === 1 ? 'участник' : called < 5 ? 'участника' : 'участников'} · {it.p.comments.length} {it.p.comments.length % 10 === 1 && it.p.comments.length % 100 !== 11 ? 'ответ' : [2, 3, 4].includes(it.p.comments.length % 10) && ![12, 13, 14].includes(it.p.comments.length % 100) ? 'ответа' : 'ответов'}{#if it.p.comments.some((c) => c.status === 'working' || c.status === 'queued')} · идёт{/if}</span>{/if}
                   <time class="faint">{new Date(it.p.calls[0].created_at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}</time>
                 </div>
