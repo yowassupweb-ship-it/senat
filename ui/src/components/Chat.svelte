@@ -18,26 +18,59 @@
   const thread = $derived(threadById(threadId));
   const project = $derived(projectById(thread?.project_id ?? projectId));
   const messages = $derived(threadId ? (app.messages[threadId] ?? []) : []);
-  // A colleague's answer to a call is a comment under that call, not a message of its own down the chat; a retried
-  // answer joins it there too.
-  const threads = $derived.by(() => {
+  // A specialist calling colleagues in is a post with comments: the calls made in a row are one post, and under it —
+  // the colleagues' answers (retries included), the notes to them and the caller's reactions, in order. The post
+  // stands in the chat where the discussion last moved, so a live one is at the bottom.
+  type Post = { key: string; author: string | null; calls: Message[]; comments: Message[]; at: number };
+  type Item = { kind: 'msg'; m: Message; at: number } | { kind: 'post'; p: Post; at: number };
+  const flow = $derived.by(() => {
     const byId = new Map(messages.map((m) => [m.id, m]));
-    const under = new Map<string, Message[]>();
-    const nested = new Set<string>();
+    const taken = new Set<string>();
+    const items: Item[] = [];
+    let open: Post | null = null;
+    const P = (m: Message) => (m.props ?? {}) as any;
     for (const m of messages) {
-      let id: string | undefined = (m.props as any)?.call?.answer;
-      const list: Message[] = [];
-      const seen = new Set<string>();
-      while (id && byId.has(id) && !seen.has(id)) {
-        seen.add(id);
-        const a = byId.get(id)!;
-        list.push(a);
-        nested.add(a.id);
-        id = (a.props as any)?.retried_by;
+      if (taken.has(m.id)) continue;
+      const call = P(m).call;
+      if (call) {
+        // a call right after the same specialist's call joins their post
+        if (!open || open.author !== m.author_id || m.created_at - open.calls[open.calls.length - 1].created_at > 5 * 60_000) {
+          open = { key: m.id, author: m.author_id, calls: [], comments: [], at: m.created_at };
+          items.push({ kind: 'post', p: open, at: 0 });
+        }
+        open.calls.push(m);
+        taken.add(m.id);
+        // calls made before they remembered their answer: the first later answer from that colleague to this caller
+        const guess = call.answer ? undefined : messages.find((x) => !taken.has(x.id) && x.created_at >= m.created_at && x.author_id === call.to && P(x).asked_by === m.author_id)?.id;
+        let id: string | undefined = call.answer ?? guess;
+        const seen = new Set<string>();
+        while (id && byId.has(id) && !seen.has(id)) {
+          seen.add(id);
+          const a = byId.get(id)!;
+          open.comments.push(a);
+          taken.add(a.id);
+          id = P(a).retried_by;
+        }
+        continue;
       }
-      if (list.length) under.set(m.id, list);
+      // the caller reacting to an answer, or a note between the same people, belongs to the open post
+      const called = open ? new Set(open.calls.map((c) => P(c).call.to)) : null;
+      if (open && called && m.author_id === open.author && ((P(m).reply_from && called.has(P(m).reply_from)) || (P(m).note && called.has(P(m).note.to)))) {
+        open.comments.push(m);
+        taken.add(m.id);
+        continue;
+      }
+      if (m.author_kind === 'user') open = null;
+      items.push({ kind: 'msg', m, at: m.created_at });
     }
-    return { under, nested };
+    for (const it of items) {
+      if (it.kind === 'post') {
+        it.p.comments.sort((a, b) => a.created_at - b.created_at);
+        const last = it.p.comments.length ? Math.max(...it.p.comments.map((c) => c.updated_at ?? c.created_at)) : it.p.at;
+        it.at = Math.max(it.p.at, last);
+      }
+    }
+    return items.sort((a, b) => a.at - b.at);
   });
   const lastAgent = $derived([...messages].reverse().find((m) => m.author_kind === 'agent'));
   const isLive = (m: Message) => m.author_kind === 'agent' && (m.status === 'working' || m.status === 'queued');
@@ -370,14 +403,32 @@
           {#if loading}
             <p class="faint center">Загрузка…</p>
           {/if}
-          {#each messages.filter((x) => !threads.nested.has(x.id)) as m (m.id)}
-            <MessageView {m} onanswer={answer} onstop={stop} onretry={retry} onimage={(a) => (lightbox = a)} onreply={isForum ? undefined : reply} />
-            {#if threads.under.get(m.id)?.length}
-              <div class="comments" role="group" aria-label="Ответ на вызов">
-                {#each threads.under.get(m.id) ?? [] as c (c.id)}
-                  <MessageView m={c} nested onanswer={answer} onstop={stop} onretry={retry} onimage={(a) => (lightbox = a)} />
-                {/each}
-              </div>
+          {#each flow as it (it.kind === 'msg' ? it.m.id : 'p' + it.p.key)}
+            {#if it.kind === 'msg'}
+              <MessageView m={it.m} onanswer={answer} onstop={stop} onretry={retry} onimage={(a) => (lightbox = a)} onreply={isForum ? undefined : reply} />
+            {:else}
+              {@const who = agentById(it.p.author)}
+              <section class="post" aria-label="Обсуждение">
+                <header class="ph">
+                  <Avatar name={who?.name} color={who?.accent} size={22} />
+                  <b>{who?.name ?? 'Специалист'}</b>
+                  <span class="faint">{it.p.calls.length > 1 ? 'собрал обсуждение' : 'зовёт коллегу'}</span>
+                  <time class="faint">{new Date(it.p.calls[0].created_at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}</time>
+                </header>
+                <ul class="asks">
+                  {#each it.p.calls as c (c.id)}
+                    {@const to = agentById((c.props as any)?.call?.to)}
+                    <li><span class="to"><Avatar name={to?.name} color={to?.accent} size={16} />{to?.name ?? 'коллега'}</span><span class="rq">{c.body.replace(/^→\s*@\S+:\s*/, '')}</span></li>
+                  {/each}
+                </ul>
+                {#if it.p.comments.length}
+                  <div class="comments" role="group" aria-label="Ответы и реплики">
+                    {#each it.p.comments as c (c.id)}
+                      <MessageView m={c} nested onanswer={answer} onstop={stop} onretry={retry} onimage={(a) => (lightbox = a)} />
+                    {/each}
+                  </div>
+                {/if}
+              </section>
             {/if}
           {/each}
           {#if !loading && !messages.length}
@@ -485,9 +536,58 @@
     overflow-y: auto;
     padding: 0 20px;
   }
+  /* a discussion: the calls as a post, the answers as comments under it */
+  .post {
+    margin: 8px 0 12px;
+    padding: 10px 12px 6px;
+    border-radius: var(--radius);
+    background: var(--bg-raised);
+    box-shadow: inset 0 0 0 1px var(--line);
+  }
+  .ph {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+  }
+  .ph time {
+    margin-left: auto;
+    font-size: 12px;
+  }
+  .asks {
+    list-style: none;
+    margin: 6px 0 4px 30px;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    font-size: 13px;
+  }
+  .asks li {
+    display: flex;
+    gap: 8px;
+    align-items: baseline;
+    min-width: 0;
+  }
+  .to {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    flex: none;
+    font-weight: 600;
+  }
+  .rq {
+    color: var(--fg-2);
+    min-width: 0;
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
+  }
   .comments {
-    margin: -2px 0 10px 11px;
-    padding-left: 18px;
+    margin: 6px 0 4px 11px;
+    padding-left: 16px;
     border-left: 2px solid var(--line);
     display: flex;
     flex-direction: column;

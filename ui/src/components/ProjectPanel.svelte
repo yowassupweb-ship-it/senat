@@ -4,6 +4,7 @@
   import ChangesPanel from './ChangesPanel.svelte';
   import FilesPanel from './FilesPanel.svelte';
   import Icon from './Icon.svelte';
+  import Splitter from './Splitter.svelte';
 
   let { threadId, projectId = '' }: { threadId: string; projectId?: string } = $props();
 
@@ -37,6 +38,7 @@
 </script>
 
 <aside class="panel" aria-label="Проект">
+  <Splitter pane="panel" edge="left" label="Ширина панели проекта" />
   <header>
     <div class="tabs" role="tablist" aria-label="Что показать">
       <button role="tab" aria-selected={tab === 'files'} class:on={tab === 'files'} onclick={() => pick('files')}>Файлы</button>
@@ -71,7 +73,8 @@
 
 <style>
   .panel {
-    width: 400px;
+    width: var(--panel-w, 400px);
+    position: relative;
     flex: none;
     border-left: 1px solid var(--line);
     background: var(--bg-sidebar);

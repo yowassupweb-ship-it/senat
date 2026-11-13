@@ -6,6 +6,7 @@
   import { app } from '../lib/store.svelte';
   import type { TreeEntry } from '../lib/types';
   import Icon from './Icon.svelte';
+  import Splitter from './Splitter.svelte';
 
   // `base`: whose folder — `/api/projects/<id>` (a project's folder) or `/api/threads/<id>` (what a chat works in).
   // `onplace`: where the tree says it is (for the panel's header), when it is not a project folder.
@@ -145,7 +146,10 @@
   {:else if !children['']}
     <p class="faint pad">Загрузка…</p>
   {:else}
-    <ul class="tree" class:half={!!selected}>{@render level('', 0)}</ul>
+    <div class="treebox" class:half={!!selected}>
+      <ul class="tree">{@render level('', 0)}</ul>
+      {#if selected}<Splitter pane="tree" edge="bottom" label="Высота дерева файлов" />{/if}
+    </div>
   {/if}
 
   {#if selected}
@@ -211,8 +215,16 @@
     flex: 1;
     min-height: 0;
   }
-  .tree.half {
-    flex: 0 1 42%;
+  .treebox {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+  }
+  /* with a file open, the tree takes the share the person dragged it to */
+  .treebox.half {
+    flex: 0 0 var(--tree-h, 42%);
   }
   .row {
     display: flex;

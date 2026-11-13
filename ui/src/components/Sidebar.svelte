@@ -2,6 +2,7 @@
   import { app, attentionCount, go, type View } from '../lib/store.svelte';
   import { patch } from '../lib/api';
   import LoadMeter from './LoadMeter.svelte';
+  import Splitter from './Splitter.svelte';
   import { ctx, type MenuItem } from '../lib/contextmenu.svelte';
   import { timeAgo } from '../lib/format';
   import type { Thread } from '../lib/types';
@@ -193,11 +194,13 @@
       </button>
     {/each}
   </div>
+  <Splitter pane="sidebar" edge="right" label="Ширина боковой панели" />
 </nav>
 
 <style>
   .side {
     width: var(--sidebar-w);
+    position: relative;
     flex: none;
     background: var(--bg-sidebar);
     border-right: 1px solid var(--line);

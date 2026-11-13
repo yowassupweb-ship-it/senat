@@ -4,6 +4,7 @@
   import type { LiveRun } from '../lib/types';
   import Avatar from './Avatar.svelte';
   import Icon from './Icon.svelte';
+  import Splitter from './Splitter.svelte';
 
   // The right-hand panel: who is working right now, on what, and a way to stop them.
   // It takes room only when there is something to show: while somebody works it opens by itself, when the last one
@@ -130,6 +131,7 @@
 
 <aside class="live" class:rail={!open} aria-label="Сейчас работают">
   {#if open}
+    <Splitter pane="live" edge="left" label="Ширина панели «Сейчас работают»" />
     <header>
       <b>Сейчас работают</b>
       {#if groups.length}<span class="count" aria-label={`${groups.length} в работе`}>{groups.length}</span>{/if}
@@ -210,7 +212,8 @@
 <style>
   .live {
     flex: none;
-    width: 300px;
+    width: var(--live-w, 300px);
+    position: relative;
     display: flex;
     flex-direction: column;
     min-height: 0;

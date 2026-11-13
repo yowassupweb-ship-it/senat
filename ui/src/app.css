@@ -285,3 +285,9 @@ h1, h2, h3 { letter-spacing: -0.015em; }
 .section > h2 { font-size: 13px; font-weight: 600; letter-spacing: -0.005em; text-transform: none; color: var(--fg-2); }
 .section > h2 .count { color: var(--fg-3); font-weight: 500; }
 .tabs button { font-size: 12.5px; font-weight: 500; }
+
+/* while an area is being dragged wider or narrower: no lag from transitions, no text selected on the way */
+html[data-resizing] * { transition: none !important; user-select: none !important; }
+html[data-resizing='x'], html[data-resizing='x'] * { cursor: col-resize !important; }
+html[data-resizing='y'], html[data-resizing='y'] * { cursor: row-resize !important; }
+@media (max-width: 760px) { [role='separator'].split { display: none; } }
