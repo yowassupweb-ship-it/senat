@@ -21,6 +21,21 @@ rm -rf "$DIR/src" && mkdir "$DIR/src"
 tar -xzf "$SRC" -C "$DIR/src"
 cd "$DIR/src/deploy"
 
+# The disk is shared with MBOX and small. A build needs ~3 GB on the way; running out of it in the middle stops
+# MBOX's database from writing. Make room first, and do not start a build that would fill the disk.
+docker image prune -f >/dev/null 2>&1 || true
+docker builder prune -f >/dev/null 2>&1 || true
+free_mb=$(df --output=avail -B1M / | tail -1 | tr -d ' ')
+if [ "${free_mb:-0}" -lt 3000 ]; then
+  docker image inspect senate-node:prev >/dev/null 2>&1 && docker rmi senate-node:prev >/dev/null 2>&1 || true
+  docker builder prune --all -f >/dev/null 2>&1 || true
+  free_mb=$(df --output=avail -B1M / | tail -1 | tr -d ' ')
+fi
+if [ "${free_mb:-0}" -lt 3000 ]; then
+  echo "На диске сервера свободно ${free_mb} МБ, сборке нужно не меньше 3000: выкладка не начата, чтобы не остановить базу MBOX. Освободите место."
+  exit 1
+fi
+
 # keep the previous image for a quick rollback
 docker image inspect senate-node:latest >/dev/null 2>&1 && docker tag senate-node:latest senate-node:prev || true
 
