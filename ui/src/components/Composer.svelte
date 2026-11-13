@@ -557,6 +557,8 @@
   .bar { flex-wrap: wrap; padding: 6px 10px 10px; gap: 3px; }
   .send { flex: none; }
   .hint { padding-top: 8px; font-size: 11px; }
+  /* under the floating field the page colour returns: the chat runs on beneath, but not through the hint */
+  .composer::after { content: ""; position: absolute; z-index: -1; left: 0; right: 0; bottom: 0; height: calc(50% + 4px); background: var(--bg); }
   .hint span { padding: 0 6px; }
   /* keyboard shortcuts mean nothing on a touch screen */
   @media (hover: none) and (pointer: coarse) { .hint { display: none; } }

@@ -157,6 +157,8 @@
   // ---------- scrolling ----------
   let scroller: HTMLElement | undefined = $state();
   let stick = $state(true);
+  // height of the floating composer: the message list keeps that much room at its end
+  let dockH = $state(0);
   // Following the output is the reader's choice, made by scrolling: up means "I am reading, leave me alone",
   // all the way down means "follow again". New content growing under them changes neither (it does not move
   // the scroll position), so a long answer arriving never makes it let go, and never snaps it back.
@@ -372,7 +374,7 @@
 </script>
 
 <div class="wrap">
-  <section class="main">
+  <section class="main" style="--dock-h:{dockH}px">
     <header>
       {#if thread}
         <button class="title" onclick={rename} title="Переименовать">{thread.title || 'Новый чат'}</button>
@@ -454,6 +456,8 @@
       {/if}
     {/if}
 
+    <!-- the composer floats over the chat: the messages run on under it to the bottom edge -->
+    <div class="dock" bind:clientHeight={dockH}>
     {#if error}<div class="error" role="alert">{error}<button class="icon-btn" onclick={() => (error = '')} aria-label="Закрыть"><Icon name="x" size={13} /></button></div>{/if}
 
     <Composer
@@ -477,6 +481,7 @@
       onresume={resumePlan}
       placeholder={isForum ? 'Добавьте мысль в обсуждение…' : meta.plan_hold ? 'План приостановлен. Что в нём не так?' : undefined}
     />
+    </div>
   </section>
 
   {#if lightbox}
@@ -548,6 +553,19 @@
     flex: 1;
     overflow-y: auto;
     padding: 0 20px;
+    /* room for the floating composer: the last message ends above it */
+    padding-bottom: calc(var(--dock-h, 150px) + 8px);
+  }
+  .dock {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 5;
+    pointer-events: none;
+  }
+  .dock > :global(*) {
+    pointer-events: auto;
   }
   /* a discussion: the calls as a post, the answers as comments under it */
   .post {
@@ -601,7 +619,7 @@
   .jump {
     position: absolute;
     right: 28px;
-    bottom: 150px;
+    bottom: calc(var(--dock-h, 150px) + 12px);
     width: 32px;
     height: 32px;
     border-radius: 50%;
