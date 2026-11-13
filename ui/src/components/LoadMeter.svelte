@@ -115,7 +115,8 @@
   .card {
     position: absolute;
     top: calc(100% + 6px);
-    right: 0;
+    /* opens to the right, over the chat: the sidebar is too narrow to hold it */
+    left: 0;
     z-index: 70;
     width: 300px;
     padding: 10px 12px;
