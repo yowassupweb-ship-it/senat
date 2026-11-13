@@ -33,6 +33,12 @@
   });
   const elapsed = $derived(Math.max(0, Math.round((now - m.created_at) / 1000)));
   let copied = $state(false);
+  // a stop takes a few seconds on a computer: the button says at once that it was taken
+  let stopping = $state(false);
+  $effect(() => {
+    if (p.phase === 'останавливается') stopping = true;
+    if (!working) stopping = false;
+  });
   let applying = $state(false);
   let reflecting = $state(false);
 
@@ -181,7 +187,7 @@
         <i class="dots" aria-hidden="true"><b></b><b></b><b></b></i>
         <span>{m.status === 'queued' ? 'в очереди' : p.phase || 'думает'}…</span>
         <span class="faint">{elapsed} с</span>
-        <button class="stop" onclick={() => onstop(m)}><Icon name="stop" size={11} filled /> Остановить</button>
+        <button class="stop" disabled={stopping} onclick={() => { stopping = true; onstop(m); }}><Icon name="stop" size={11} filled /> {stopping ? 'Останавливается…' : 'Остановить'}</button>
       </div>
     {/if}
 
@@ -201,7 +207,7 @@
       {#if working}
         <div class="status" role="status">
           <span class="faint">{p.phase || 'пишет'}… {elapsed} с</span>
-          <button class="stop" onclick={() => onstop(m)}><Icon name="stop" size={11} filled /> Остановить</button>
+          <button class="stop" disabled={stopping} onclick={() => { stopping = true; onstop(m); }}><Icon name="stop" size={11} filled /> {stopping ? 'Останавливается…' : 'Остановить'}</button>
         </div>
       {/if}
     {/if}

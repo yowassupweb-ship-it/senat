@@ -271,11 +271,11 @@ pub(crate) async fn remote_run(app: &Arc<App>, mut spec: RunSpec, slug: &str, ma
             },
             _ = futures_util::StreamExt::next(&mut asks), if !asks.is_empty() => {}
             _ = tokio::time::sleep(Duration::from_secs(5)) => {
-                // Stopped by the person: the computer gets 15 s to wind down and report; after that the specialist is
-                // freed here anyway — a stuck CLI over there must not keep them "working" for an hour.
+                // Stopped by the person: the computer gets a few seconds to wind down and report; after that the
+                // specialist is freed here anyway — a stuck CLI over there must not keep them "working".
                 if *cancel.borrow() {
                     let at = *cancelled_at.get_or_insert_with(Instant::now);
-                    if at.elapsed() > Duration::from_secs(15) {
+                    if at.elapsed() > Duration::from_secs(8) {
                         break Outcome { stopped: true, ..Default::default() };
                     }
                 }

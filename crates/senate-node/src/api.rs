@@ -539,7 +539,18 @@ fn stop_message(a: &App, id: &str) -> Result<bool, Error> {
 }
 
 async fn cancel(State(a): S, Path(id): Path<String>) -> R {
-    ok(json!({"stopped": stop_message(&a, &id)?}))
+    let stopped = stop_message(&a, &id)?;
+    // the person sees at once that the stop was taken: a turn on a computer takes a few seconds to wind down
+    if stopped {
+        if let Ok(m) = a.store.get_message(&id) {
+            if matches!(m.status, MessageStatus::Working | MessageStatus::Queued) {
+                if let Ok(m) = a.store.update_message(&id, None, Some(&json!({"phase": "останавливается"})), None) {
+                    a.publish("message", serde_json::to_value(&m).unwrap_or_default());
+                }
+            }
+        }
+    }
+    ok(json!({"stopped": stopped}))
 }
 
 /// "I do not agree with this plan": everyone working in the chat is stopped, the plan is kept, and the
