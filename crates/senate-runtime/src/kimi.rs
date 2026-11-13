@@ -147,6 +147,45 @@ fn pick(options: &[Value], allow: bool) -> Value {
     }
 }
 
+/// The last error Kimi wrote to its own log in the past two minutes (`provider.api_error: 429 You've reached …`).
+fn recent_log_error() -> String {
+    let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(std::path::PathBuf::from) else { return String::new() };
+    for dir in [".kimi-code", ".kimi"] {
+        let Ok(text) = std::fs::read_to_string(home.join(dir).join("logs").join("kimi-code.log")) else { continue };
+        let since = chrono_like_now_minus(120);
+        for line in text.lines().rev().take(200) {
+            // lines start with an ISO time: only fresh ones count
+            if line.get(..19).map(|t| t < since.as_str()).unwrap_or(true) {
+                break;
+            }
+            let l = line.to_lowercase();
+            if l.contains("error") && (l.contains("429") || l.contains("limit") || l.contains("quota") || l.contains("api_error") || l.contains("provider")) {
+                return line.splitn(2, "ERROR").nth(1).unwrap_or(line).trim().chars().take(400).collect();
+            }
+        }
+    }
+    String::new()
+}
+
+/// `YYYY-MM-DDTHH:MM:SS` (UTC) `secs` ago, comparable with the log's line starts.
+fn chrono_like_now_minus(secs: u64) -> String {
+    let t = std::time::SystemTime::now() - std::time::Duration::from_secs(secs);
+    let s = t.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0) as i64;
+    let (days, rem) = (s.div_euclid(86_400), s.rem_euclid(86_400));
+    // civil-from-days (Howard Hinnant), no date library needed for this one comparison
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}", rem / 3600, (rem % 3600) / 60, rem % 60)
+}
+
 /// The folder Kimi recorded for a session (`session_index.jsonl` in its home), if it knows the session.
 fn session_workdir(session_id: &str) -> Option<std::path::PathBuf> {
     let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(std::path::PathBuf::from)?;
@@ -312,6 +351,17 @@ pub async fn run(spec: RunSpec, approver: &dyn Approver, tx: EventTx, mut cancel
         crate::common::kill_tree(&mut p.child).await;
     } else {
         let _ = p.child.kill().await;
+    }
+    // Kimi over ACP ends a prompt it could not run (a spent limit, a provider error) as if it were done: no word, no
+    // step. That is a failure with a reason — from its own log — not an empty success a colleague waits on forever.
+    let said_nothing = t.done && t.text.trim().is_empty() && t.steps.is_empty();
+    if !stopped && t.failure.is_none() && said_nothing {
+        let log = recent_log_error();
+        t.failure = Some(match limit_from_text(&log).or_else(|| limit_from_text(&tail)) {
+            Some(l) => format!("Исчерпан лимит подписки Kimi: {l}"),
+            None if !log.is_empty() => clip(&human_error(&log), 600),
+            None => "Kimi закончил ход без ответа и без действий: вероятно, исчерпан лимит или сбой провайдера. Повторите позже или смените модель.".into(),
+        });
     }
     if !stopped && t.failure.is_none() && t.text.is_empty() && !t.done {
         t.failure = Some(match limit_from_text(&tail) {
