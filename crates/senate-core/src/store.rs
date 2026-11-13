@@ -1673,6 +1673,52 @@ impl Store {
         Ok(serde_json::json!({"from": from_ms, "to": to_ms, "now": now, "offset": offset_secs, "items": items}))
     }
 
+    // ---------- notes between specialists ----------
+    /// Leave a note for a colleague. Returns its id.
+    pub fn add_note(&self, thread_id: Option<&str>, from: &str, to: &str, text: &str, urgent: bool) -> Result<String> {
+        let id = new_id();
+        self.lock().execute(
+            "INSERT INTO agent_notes(id,thread_id,from_agent,to_agent,text,urgent,created_at) VALUES (?,?,?,?,?,?,?)",
+            params![id, thread_id, from, to, text, urgent as i64, now_ms()],
+        )?;
+        Ok(id)
+    }
+
+    /// Notes the agent has not seen yet, oldest first; they count as delivered from now on.
+    pub fn take_notes(&self, agent_id: &str) -> Result<Vec<serde_json::Value>> {
+        let c = self.lock();
+        let mut st = c.prepare(
+            "SELECT n.id, a.name, a.slug, n.text, n.urgent, n.created_at FROM agent_notes n JOIN agents a ON a.id=n.from_agent WHERE n.to_agent=? AND n.delivered_at IS NULL ORDER BY n.created_at",
+        )?;
+        let notes = st
+            .query_map([agent_id], |r| {
+                Ok(serde_json::json!({"id": r.get::<_, String>(0)?, "from": r.get::<_, String>(1)?, "from_slug": r.get::<_, String>(2)?, "text": r.get::<_, String>(3)?, "urgent": r.get::<_, i64>(4)? != 0, "at": r.get::<_, i64>(5)?}))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        if !notes.is_empty() {
+            c.execute("UPDATE agent_notes SET delivered_at=? WHERE to_agent=? AND delivered_at IS NULL", params![now_ms(), agent_id])?;
+        }
+        Ok(notes)
+    }
+
+    /// Is the specialist in the middle of a turn right now?
+    pub fn agent_running(&self, agent_id: &str) -> Result<bool> {
+        let n: i64 = self.lock().query_row("SELECT COUNT(*) FROM sessions WHERE status='running' AND agent_id=?", [agent_id], |r| r.get(0))?;
+        Ok(n > 0)
+    }
+
+    /// What became of the notes this agent sent lately: read or still waiting.
+    pub fn sent_notes(&self, agent_id: &str, limit: i64) -> Result<Vec<serde_json::Value>> {
+        let c = self.lock();
+        let mut st = c.prepare("SELECT n.id, a.slug, substr(n.text,1,120), n.created_at, n.delivered_at FROM agent_notes n JOIN agents a ON a.id=n.to_agent WHERE n.from_agent=? ORDER BY n.created_at DESC LIMIT ?")?;
+        let v = st
+            .query_map(params![agent_id, limit], |r| {
+                Ok(serde_json::json!({"id": r.get::<_, String>(0)?, "to": r.get::<_, String>(1)?, "text": r.get::<_, String>(2)?, "at": r.get::<_, i64>(3)?, "read_at": r.get::<_, Option<i64>>(4)?}))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(v)
+    }
+
     // ---------- "allow always" ----------
     pub fn list_permission_rules(&self) -> Result<Vec<PermissionRule>> {
         let c = self.lock();

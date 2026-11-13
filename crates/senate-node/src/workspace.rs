@@ -250,6 +250,11 @@ pub(crate) fn environment_block(machine: &str, cwd: &Path, env: &Value) -> Strin
     if os == "Windows" {
         s += "Оболочка — PowerShell: пути с обратной косой чертой, многострочный текст в git передавай через файл (`git commit -F`).\n";
     }
+    s += if os == "Windows" {
+        "Всё, что не заканчивается само (dev-сервер, `npm run dev`, `tauri dev`, watch), запускай в фоне и не жди: `Start-Process -WindowStyle Hidden npm -ArgumentList 'run','dev' -RedirectStandardOutput dev.log`, потом проверь порт (`Test-NetConnection localhost -Port N` или запрос к странице). Запущенная напрямую команда, которая не завершается, держит твой ход до остановки человеком.\n"
+    } else {
+        "Всё, что не заканчивается само (dev-сервер, `npm run dev`, watch), запускай в фоне и не жди: `nohup npm run dev > dev.log 2>&1 &`, потом проверь порт запросом к странице. Запущенная напрямую команда, которая не завершается, держит твой ход до остановки человеком.\n"
+    };
     s
 }
 

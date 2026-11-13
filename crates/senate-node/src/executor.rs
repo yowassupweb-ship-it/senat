@@ -267,13 +267,20 @@ pub(crate) async fn execute(app: Arc<App>, s: Session) {
     // After `/compact` a fresh session knows the chat only through the specialist's own summary of it.
     let compact_turn = store.get_message(&msg_id).map(|m| m.props["compact"].as_bool().unwrap_or(false)).unwrap_or(false);
     let mut turn_prompt = s.prompt.clone();
+    // notes colleagues left while this specialist was away come with the turn
+    if let Ok(notes) = store.take_notes(&agent.id) {
+        if !notes.is_empty() {
+            turn_prompt = crate::notes::block(&notes) + &turn_prompt;
+        }
+    }
     if resume.is_none() && !compact_turn {
         if let Some(sum) = thread.as_ref().and_then(|t| senate_core::store::Store::compact_summary(t, &agent.id)) {
             turn_prompt = senate_core::workset::compact_preamble(&sum) + &turn_prompt;
         }
     }
 
-    let effort = thread.as_ref().map(|t| t.effort.clone()).filter(|e| !e.is_empty());
+    // the chat's choice, else the specialist's own default (set on their sheet)
+    let effort = thread.as_ref().map(|t| t.effort.clone()).filter(|e| !e.is_empty()).or_else(|| store.setting(&format!("effort:{}", agent.id)).ok().flatten().filter(|e| !e.is_empty()));
     let cwd_for_rules = cwd.clone();
     let spec = RunSpec {
         backend: s.backend.clone(),
@@ -382,7 +389,9 @@ pub(crate) async fn execute(app: Arc<App>, s: Session) {
     // A colleague who was called has answered (or could not): the answer goes back to whoever called them.
     if status != MessageStatus::Cancelled {
         if let (Ok(m), Some(tid)) = (store.get_message(&msg_id), s.thread_id.as_deref()) {
-            if let Some(asker) = m.props["asked_by"].as_str() {
+            // asked with senate_ask_colleague and the asker is still waiting: the answer goes to them inline, not as a turn
+            let waited_inline = m.props["inline_wait"] == true && m.props["inline_gave_up"] != true;
+            if let (Some(asker), false) = (m.props["asked_by"].as_str(), waited_inline) {
                 let reply = if status == MessageStatus::Done { outcome.text.clone() } else { format!("Не удалось ответить: {}", outcome.failure.clone().unwrap_or_default()) };
                 if let Ok(Some(next)) = store.return_call(tid, asker, &agent, &reply, m.props["depth"].as_i64().unwrap_or(1), &app.backend_default()) {
                     if let Some(nm) = next.message_id.as_ref().and_then(|i| store.get_message(i).ok()) {

@@ -4,6 +4,7 @@
   import { app, go } from '../lib/store.svelte';
   import { N, ROLE_TITLE, STATE_LABEL, count, dots, roleLabel, timeAgo } from '../lib/format';
   import { modelOptions, modelTitle } from '../lib/models';
+  import { effortOptions, effortTitle, providerOf } from '../lib/effort';
   import type { Memory, Obligation, Project } from '../lib/types';
   import Avatar from '../components/Avatar.svelte';
   import BrandMark from '../components/BrandMark.svelte';
@@ -45,6 +46,7 @@
 
   type Sheet = {
     agent: any;
+    effort?: string;
     stats: any;
     projects: Project[];
     obligations: Obligation[];
@@ -132,6 +134,44 @@
     await refreshList();
     load();
   }
+  async function setEffort(v: string) {
+    await patch(`/api/agents/${id}`, { effort: v });
+    load();
+  }
+
+  // ---- growth: a rank by level, traits grown from what they learned, achievements with the way to the next one
+  const RANKS = ['Стажёр', 'Младший', 'Специалист', 'Специалист', 'Старший', 'Старший', 'Эксперт', 'Эксперт', 'Мастер'];
+  const rankOf = (lv: number) => RANKS[Math.min(RANKS.length, Math.max(1, lv)) - 1];
+  const memTotal = (s: any) => Object.values(s?.memory ?? {}).reduce((x: number, y: any) => x + (y as number), 0) as number;
+  const traits = $derived.by(() => {
+    if (!st) return [];
+    const m = st.memory ?? {};
+    const out: { label: string; hint: string }[] = [];
+    if ((m.verified ?? 0) >= 3) out.push({ label: 'Дотошный', hint: 'проверяет, прежде чем утверждать' });
+    if ((m.preference ?? 0) >= 3) out.push({ label: 'Чуткий к владельцу', hint: 'помнит, как вы любите работать' });
+    if ((m.error ?? 0) >= 2) out.push({ label: 'Учится на ошибках', hint: 'записывает, где ошибся' });
+    if ((m.observation ?? 0) >= 3) out.push({ label: 'Наблюдательный', hint: 'замечает закономерности' });
+    if ((st.corrections ?? 0) >= 1) out.push({ label: 'Самокритичный', hint: 'исправляет свои записи' });
+    if ((st.companies?.length ?? 0) >= 2) out.push({ label: 'Многостаночник', hint: 'работал на разные компании' });
+    if ((st.sessions ?? 0) >= 30) out.push({ label: 'Работяга', hint: 'много смен за плечами' });
+    return out;
+  });
+  const achievements = $derived.by(() => {
+    if (!st) return [];
+    const a = (label: string, icon: string, have: number, need: number, hint: string) => ({ label, icon, have, need, hint, got: have >= need });
+    return [
+      a('Первая смена', 'bolt', st.sessions ?? 0, 1, 'первая сессия работы'),
+      a('Ветеран', 'clock', st.sessions ?? 0, 50, '50 сессий работы'),
+      a('Слово держит', 'check', st.obligations?.done ?? 0, 10, '10 выполненных задач'),
+      a('Надёжный', 'shield', st.reliability ?? 0, 90, 'надёжность от 90%'),
+      a('Эрудит', 'book', memTotal(st), 25, '25 знаний в памяти'),
+      a('Проверено', 'star', st.memory?.verified ?? 0, 10, '10 проверенных знаний'),
+      a('Работа над ошибками', 'refresh', (st.memory?.error ?? 0) + (st.corrections ?? 0), 5, 'записанные ошибки и исправления'),
+      a('Своя команда', 'building', st.companies?.length ?? 0, 3, 'опыт в трёх компаниях'),
+      a('Мастер навыков', 'sparkle', sheet?.skills?.length ?? 0, 10, '10 навыков'),
+      a('Марафонец', 'brain', Math.round((st.tokens ?? 0) / 1_000_000), 100, '100 млн токенов работы'),
+    ].sort((x, y) => Number(y.got) - Number(x.got));
+  });
   // Name and @username, by hand. The username is what `@` addresses; a stored one is Latin only.
   let renaming = $state(false);
   let rn = $state({ name: '', slug: '', gender: '' });
@@ -344,6 +384,24 @@
         </div>
 
         <div class="section">
+          <h2>Рост <span class="count">{rankOf(st?.level ?? 1)}</span></h2>
+          {#if traits.length}
+            <div class="traits">{#each traits as t}<span class="chip" title={t.hint}>{t.label}</span>{/each}</div>
+          {:else}
+            <p class="faint" style="font-size:12.5px;margin:0 0 10px">Характер проявится с опытом: проверенные знания, учёт предпочтений, работа над ошибками.</p>
+          {/if}
+          <div class="ach">
+            {#each achievements as x (x.label)}
+              <div class="badge card" class:got={x.got} title={x.hint}>
+                <span class="bi"><Icon name={x.icon} size={15} /></span>
+                <span class="bt"><b>{x.label}</b><span class="faint">{x.got ? x.hint : `${Math.min(x.have, x.need)} из ${x.need} · ${x.hint}`}</span></span>
+                {#if !x.got}<span class="bp" aria-hidden="true"><i style="width:{Math.round((Math.min(x.have, x.need) / x.need) * 100)}%"></i></span>{/if}
+              </div>
+            {/each}
+          </div>
+        </div>
+
+        <div class="section">
           <h2>Личность</h2>
           <div class="card pad form">
             <textarea class="field" rows="6" bind:value={profile} aria-label="Личность специалиста: как он работает и чем руководствуется"></textarea>
@@ -386,6 +444,8 @@
           <h2>Основная модель</h2>
           <div class="card pad form">
             <Dropdown block value={a.model_pref} options={models} label="Основная модель" onpick={setModel} />
+            <label>Рассуждение по умолчанию <small>{effortTitle(providerOf(a.model_pref, app.defaultBackend))} — когда в чате не выбрано иначе</small>
+              <Dropdown block value={sheet.effort ?? ''} options={effortOptions(providerOf(a.model_pref, app.defaultBackend))} label="Рассуждение по умолчанию" onpick={setEffort} /></label>
           </div>
         </div>
 
@@ -658,6 +718,16 @@
       flex-wrap: wrap;
     }
   }
+  .traits { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+  .ach { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 200px), 1fr)); gap: 8px; }
+  .badge { position: relative; display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px 12px; overflow: hidden; opacity: 0.62; }
+  .badge.got { opacity: 1; }
+  .bi { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; flex: none; background: var(--accent-soft); color: var(--fg-3); }
+  .badge.got .bi { background: color-mix(in srgb, var(--c, var(--fg-2)) 22%, transparent); color: var(--fg); }
+  .bt { display: flex; flex-direction: column; gap: 2px; min-width: 0; font-size: 12.5px; line-height: 1.35; }
+  .bt .faint { font-size: 11.5px; }
+  .bp { position: absolute; left: 12px; right: 12px; bottom: 6px; height: 3px; border-radius: 2px; background: var(--line); overflow: hidden; }
+  .bp i { display: block; height: 100%; background: var(--fg-3); }
   .tiles {
     display: grid;
     grid-template-columns: repeat(3, 1fr);

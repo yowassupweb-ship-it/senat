@@ -260,6 +260,7 @@ async fn attempt(spec: &RunSpec, approver: &dyn Approver, tx: &EventTx, mut canc
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    crate::common::own_group(&mut cmd);
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
@@ -337,14 +338,16 @@ async fn attempt(spec: &RunSpec, approver: &dyn Approver, tx: &EventTx, mut canc
             _ => handle_event(&ev, tx, &mut st),
         }
         if st.done {
-            // Close stdin so the CLI exits instead of waiting for the next user message.
+            // Close stdin so the CLI exits instead of waiting for the next user message — and stop reading: the
+            // result is the last word, and a server the agent left running may keep the output open for hours.
             drop(stdin.take());
+            break;
         }
     }
 
     drop(stdin.take());
     if stopped {
-        let _ = child.kill().await;
+        crate::common::kill_tree(&mut child).await;
     } else {
         let _ = tokio::time::timeout(std::time::Duration::from_secs(5), child.wait()).await;
     }

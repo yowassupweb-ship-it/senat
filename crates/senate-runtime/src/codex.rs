@@ -137,7 +137,11 @@ pub async fn run(spec: RunSpec, _approver: &dyn Approver, tx: EventTx, mut cance
             false
         }
     };
-    let _ = proc.child.kill().await;
+    if stopped {
+        crate::common::kill_tree(&mut proc.child).await;
+    } else {
+        let _ = proc.child.kill().await;
+    }
     if !stopped && t.failure.is_none() && t.text.is_empty() {
         let tail = proc.tail.lock().unwrap().clone();
         t.failure = Some(match limit_from_text(&tail) {

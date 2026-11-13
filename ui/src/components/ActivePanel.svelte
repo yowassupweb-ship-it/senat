@@ -31,6 +31,21 @@
   let dismissed = $state(false);
   let wide = $state(window.innerWidth >= 1280);
   const runs = $derived(app.live);
+  // One card per specialist: what they do now, and below it what waits for them — not a card per queued turn.
+  const rank = (r: LiveRun) => (r.awaiting ? 0 : r.status === 'running' ? 1 : 2);
+  const groups = $derived.by(() => {
+    const by = new Map<string, LiveRun[]>();
+    for (const r of runs) by.set(r.agent_id, [...(by.get(r.agent_id) ?? []), r]);
+    return [...by.entries()]
+      .map(([agent_id, list]) => {
+        const sorted = [...list].sort((a, b) => rank(a) - rank(b) || a.since - b.since);
+        return { agent_id, lead: sorted[0], rest: sorted.slice(1) };
+      })
+      .sort((a, b) => rank(a.lead) - rank(b.lead) || a.lead.since - b.lead.since);
+  });
+  // The folder of the chat on screen: the strip offers it, so the files are one click away from anywhere in the chat.
+  const viewThread = $derived(app.view.kind === 'chat' ? app.threads.find((t) => t.id === (app.view as any).id) : undefined);
+  const viewFolder = $derived(!!viewThread && (!!app.projects.find((p) => p.id === viewThread.project_id)?.root_path || !!app.git['t:' + viewThread.id]?.available));
   const busy = $derived(runs.some((r) => r.status === 'running' || r.status === 'queued' || r.awaiting));
   const open = $derived(pinned || (busy && !dismissed && wide));
   $effect(() => {
@@ -88,13 +103,15 @@
   {#if open}
     <header>
       <b>Сейчас работают</b>
-      {#if runs.length}<span class="count" aria-label={`${runs.length} в работе`}>{runs.length}</span>{/if}
+      {#if groups.length}<span class="count" aria-label={`${groups.length} в работе`}>{groups.length}</span>{/if}
       <span class="grow"></span>
+      {#if viewFolder}<button class="icon-btn" aria-pressed={app.panel} onclick={() => (app.panel = !app.panel)} aria-label="Файлы и изменения проекта" title="Файлы и изменения проекта"><Icon name="folder" size={15} /></button>{/if}
       <button class="icon-btn" onclick={toggle} aria-label="Свернуть панель" title={busy ? 'Свернуть до конца работы' : 'Свернуть'}><Icon name="right" size={15} /></button>
     </header>
     <div class="list">
-      {#each runs as r (r.session_id)}
-        {@const ag = agentById(r.agent_id)}
+      {#each groups as g (g.agent_id)}
+        {@const ag = agentById(g.agent_id)}
+        {@const r = g.lead}
         <article class="run" class:wait={r.awaiting} class:queued={r.status === 'queued'}>
           <div class="who">
             <Avatar name={ag?.name} color={ag?.accent} size={26} />
@@ -112,6 +129,16 @@
             <button class="where" onclick={() => openRun(r)} title={r.title || 'Открыть'}>{r.title || (r.kind === 'task' ? 'Задача' : 'Чат')}</button>
             <button class="btn sm" onclick={() => stopRun(r)} aria-label={`Остановить: ${ag?.name ?? 'специалиста'}`}><Icon name="stop" size={10} filled />Стоп</button>
           </div>
+          {#if g.rest.length}
+            <ul class="queue" aria-label="Дальше у специалиста">
+              {#each g.rest as q (q.session_id)}
+                <li>
+                  <button class="qw" onclick={() => openRun(q)} title={q.title || 'Открыть'}><span class="qt">{q.title || (q.kind === 'task' ? 'Задача' : 'Чат')}</span><span class="faint">{stateOf(q)} · {dur(q.since)}</span></button>
+                  <button class="icon-btn qs" onclick={() => stopRun(q)} aria-label={`Убрать из очереди: ${q.title || 'ход'}`} title="Убрать из очереди"><Icon name="x" size={12} /></button>
+                </li>
+              {/each}
+            </ul>
+          {/if}
         </article>
       {:else}
         <p class="empty muted">Никто не работает. Панель закреплена: сверните её, и она будет открываться сама, когда кто-то возьмётся за дело.</p>
@@ -119,12 +146,13 @@
 
     </div>
   {:else}
-    <button class="rail-btn" onclick={toggle} aria-label={busy ? `Сейчас работают: ${runs.length}. Развернуть панель` : 'Никто не работает. Закрепить панель открытой'} title={busy ? 'Сейчас работают' : 'Никто не работает'}>
+    {#if viewFolder}<button class="rail-folder" aria-pressed={app.panel} onclick={() => (app.panel = !app.panel)} aria-label="Файлы и изменения проекта" title="Файлы и изменения проекта"><Icon name="folder" size={16} /></button>{/if}
+    <button class="rail-btn" onclick={toggle} aria-label={busy ? `Сейчас работают: ${groups.length}. Развернуть панель` : 'Никто не работает. Закрепить панель открытой'} title={busy ? 'Сейчас работают' : 'Никто не работает'}>
       <Icon name="bolt" size={16} />
-      {#if runs.length}<span class="count">{runs.length}</span>{/if}
-      {#each runs.slice(0, 6) as r (r.session_id)}
-        {@const ag = agentById(r.agent_id)}
-        <span class="rav" class:on={r.status === 'running'}><Avatar name={ag?.name} color={ag?.accent} size={26} /></span>
+      {#if groups.length}<span class="count">{groups.length}</span>{/if}
+      {#each groups.slice(0, 6) as g (g.agent_id)}
+        {@const ag = agentById(g.agent_id)}
+        <span class="rav" class:on={g.lead.status === 'running'}><Avatar name={ag?.name} color={ag?.accent} size={26} />{#if g.rest.length}<span class="qn">+{g.rest.length}</span>{/if}</span>
       {/each}
     </button>
   {/if}
@@ -176,6 +204,16 @@
   .where:hover { text-decoration: underline; }
   .foot .btn { display: inline-flex; align-items: center; gap: 5px; }
 
+  .queue { list-style: none; margin: 0; padding: 6px 0 0; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 2px; }
+  .queue li { display: flex; align-items: center; gap: 4px; min-width: 0; }
+  .qw { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 6px; padding: 3px 4px; border-radius: var(--radius-s); text-align: left; font-size: 12px; }
+  .qw:hover { background: var(--bg-hover); }
+  .qt { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .qw .faint { flex: none; font-size: 11px; font-variant-numeric: tabular-nums; }
+  .qs { width: 22px; height: 22px; }
+  .qn { position: absolute; left: -6px; top: -6px; min-width: 16px; padding: 0 3px; border-radius: 8px; background: var(--bg-raised); box-shadow: 0 0 0 1px var(--line-strong); font-size: 10px; line-height: 16px; text-align: center; color: var(--fg-2); font-variant-numeric: tabular-nums; }
+  .rail-folder { display: grid; place-items: center; width: 100%; height: 44px; color: var(--fg-2); border-bottom: 1px solid var(--line); }
+  .rail-folder:hover, .rail-folder[aria-pressed='true'] { background: var(--bg-hover); color: var(--fg); }
   .rail-btn { display: flex; flex-direction: column; align-items: center; gap: 12px; width: 100%; padding: 16px 0; color: var(--fg-2, var(--fg)); }
   .rail-btn:hover { background: var(--bg-hover); }
   .rail-btn .count { margin-top: -6px; }

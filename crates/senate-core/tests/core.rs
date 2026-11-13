@@ -884,3 +884,33 @@ fn a_chat_imports_additively_and_repeatably() {
     assert_eq!(st.import_thread(&over, &[json!({"id": "m9", "author_kind": "user", "body": "ещё"})]).unwrap(), (false, 1));
     assert_eq!(st.get_thread(&existing.id).unwrap().title, "Свой");
 }
+
+#[test]
+fn a_note_reaches_a_colleague_and_the_sender_sees_it_read() {
+    let (st, dev, arch, p) = setup();
+    let t = st.create_thread(NewThread { project_id: Some(p.id.clone()), agent_id: Some(dev.id.clone()), ..Default::default() }).unwrap();
+    let ctx = ToolCtx { agent_id: dev.id.clone(), thread_id: Some(t.id.clone()), project_id: Some(p.id.clone()), ..Default::default() };
+    let r = tools::call(&st, &ctx, "senate_message_colleague", &json!({"to": arch.slug, "text": "Не запускай npm run build, пока идёт tauri dev", "urgent": true})).unwrap();
+    assert_eq!(r["status"], "delivered_next_turn", "the architect is not working now");
+    // the architect sees it once
+    let actx = ToolCtx { agent_id: arch.id.clone(), ..Default::default() };
+    let inbox = tools::call(&st, &actx, "senate_inbox", &json!({})).unwrap();
+    assert_eq!(inbox["new"][0]["urgent"], true);
+    assert!(inbox["new"][0]["text"].as_str().unwrap().contains("tauri dev"));
+    assert!(tools::call(&st, &actx, "senate_inbox", &json!({})).unwrap()["new"].as_array().unwrap().is_empty());
+    // and the developer sees that it was read
+    let mine = tools::call(&st, &ctx, "senate_inbox", &json!({})).unwrap();
+    assert_eq!(mine["sent"][0]["read"], true);
+    // nobody, an empty note, or oneself: refused plainly
+    assert!(tools::call(&st, &ctx, "senate_message_colleague", &json!({"to": "nobody", "text": "x"})).is_err());
+    assert!(tools::call(&st, &ctx, "senate_message_colleague", &json!({"to": arch.slug, "text": " "})).is_err());
+    assert!(tools::call(&st, &ctx, "senate_message_colleague", &json!({"to": dev.slug, "text": "x"})).is_err());
+}
+
+#[test]
+fn a_call_past_the_chain_limit_says_plainly_it_was_not_delivered() {
+    let (st, dev, arch, p) = setup();
+    let t = st.create_thread(NewThread { project_id: Some(p.id.clone()), agent_id: Some(dev.id.clone()), ..Default::default() }).unwrap();
+    let e = st.call_colleague(&dev, &t.id, &arch.slug, "проверь", 3, "mock").unwrap_err().to_string();
+    assert!(e.contains("НЕ ДОСТАВЛЕНО") && e.contains("senate_message_colleague"), "{e}");
+}

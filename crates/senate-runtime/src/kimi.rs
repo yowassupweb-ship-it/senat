@@ -308,7 +308,11 @@ pub async fn run(spec: RunSpec, approver: &dyn Approver, tx: EventTx, mut cancel
         let _ = tokio::time::timeout(Duration::from_secs(2), async { p.stdin = None }).await;
     }
     let tail = p.tail.lock().unwrap().clone();
-    let _ = p.child.kill().await;
+    if stopped {
+        crate::common::kill_tree(&mut p.child).await;
+    } else {
+        let _ = p.child.kill().await;
+    }
     if !stopped && t.failure.is_none() && t.text.is_empty() && !t.done {
         t.failure = Some(match limit_from_text(&tail) {
             Some(l) => format!("Исчерпан лимит подписки: {l}"),

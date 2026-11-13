@@ -194,10 +194,36 @@ export async function loadMessages(threadId: string, before?: string) {
   else app.hasMore[threadId] = r.has_more;
 }
 
+// While the person has text selected inside a message, updates to that message wait: a specialist streaming
+// several times a second would otherwise redraw the text under the selection and drop it.
+const held = new Map<string, Message>();
+function selectingIn(id: string): boolean {
+  if (typeof document === 'undefined') return false;
+  const sel = document.getSelection();
+  if (!sel || sel.isCollapsed || !sel.anchorNode) return false;
+  const el = (sel.anchorNode instanceof Element ? sel.anchorNode : sel.anchorNode.parentElement)?.closest('[data-mid]');
+  return el?.getAttribute('data-mid') === id;
+}
+if (typeof document !== 'undefined') {
+  document.addEventListener('selectionchange', () => {
+    for (const [id, m] of [...held]) {
+      if (!selectingIn(id)) {
+        held.delete(id);
+        upsertMessage(m);
+      }
+    }
+  });
+}
+
 export function upsertMessage(m: Message) {
   const list = app.messages[m.thread_id];
   if (!list) return;
   const i = list.findIndex((x) => x.id === m.id);
+  if (i >= 0 && m.status !== 'done' && m.status !== 'failed' && selectingIn(m.id)) {
+    held.set(m.id, m);
+    return;
+  }
+  held.delete(m.id);
   if (i >= 0) list[i] = m;
   else list.push(m);
 }

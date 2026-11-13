@@ -365,6 +365,21 @@ CREATE TABLE routines (
     r#"
 ALTER TABLE agents ADD COLUMN gender TEXT NOT NULL DEFAULT '';
 "#,
+    // 11 - notes between specialists: delivered while the recipient works (with their next Senate tool result) or at
+    // their next turn, never lost to a call-chain limit; the sender can see when it was read.
+    r#"
+CREATE TABLE agent_notes (
+  id TEXT PRIMARY KEY,
+  thread_id TEXT,
+  from_agent TEXT NOT NULL REFERENCES agents(id),
+  to_agent TEXT NOT NULL REFERENCES agents(id),
+  text TEXT NOT NULL,
+  urgent INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  delivered_at INTEGER                         -- NULL = not seen by the recipient yet
+);
+CREATE INDEX agent_notes_to ON agent_notes(to_agent, delivered_at);
+"#,
 ];
 
 pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {

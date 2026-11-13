@@ -96,6 +96,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/threads/:id/plan/pause", post(plan_pause))
         .route("/api/threads/:id/plan/resume", post(plan_resume))
         .route("/api/messages/:id/answer", post(answer))
+        .route("/api/messages/:id/question", post(answer_question))
         .route("/api/messages/:id/cancel", post(cancel))
         .route("/api/messages/:id/reflect", post(reflect_message))
         // specialists
@@ -461,6 +462,16 @@ async fn permission_rule_delete(State(a): S, Path(id): Path<String>) -> R {
     ok(json!({"ok": true}))
 }
 
+/// The person answers a question a specialist asked mid-work (`senate_ask_person`).
+async fn answer_question(State(a): S, Path(id): Path<String>, Json(b): Json<Value>) -> R {
+    let text = b["answer"].as_str().unwrap_or("").trim();
+    if text.is_empty() {
+        return Err(bad("пустой ответ"));
+    }
+    crate::notes::answer(&a, &id, text).map_err(|e| ApiError(StatusCode::CONFLICT, e))?;
+    ok(json!({"ok": true}))
+}
+
 async fn answer(State(a): S, Path(id): Path<String>, Json(b): Json<Value>) -> R {
     let allow = b["decision"].as_str() == Some("allow");
     let note = b["note"].as_str().unwrap_or("").to_string();
@@ -605,6 +616,13 @@ async fn patch_agent(State(a): S, Path(id): Path<String>, Json(b): Json<Value>) 
     }
     if let Some(g) = b["gender"].as_str() {
         ag = a.store.set_agent_gender(&ag.id, g)?;
+    }
+    // how hard they think when a chat does not say: one of the three steps each provider maps to its own control
+    if let Some(e) = b["effort"].as_str() {
+        if !matches!(e, "" | "low" | "medium" | "high") {
+            return Err(bad("рассуждение: low, medium, high или пусто"));
+        }
+        a.store.set_setting(&format!("effort:{}", ag.id), e)?;
     }
     // The picture arrives as an upload id; the address stored is the node's own, never the client's.
     if let Some(v) = b.get("avatar_id") {
@@ -1250,12 +1268,21 @@ async fn agent_call(State(a): S, req: Request) -> Response {
     }
     if name == "senate_image_generate" {
         return match crate::images::generate(&a, &ctx, &args).await {
-            Ok(r) => Json(json!({"ok": true, "result": r})).into_response(),
+            Ok(r) => Json(json!({"ok": true, "result": crate::notes::attach(&a, &ctx, r)})).into_response(),
             Err(e) => ApiError::from(e).into_response(),
+        };
+    }
+    // questions that wait for an answer without ending the turn
+    if name == "senate_ask_colleague" || name == "senate_ask_person" {
+        let r = if name == "senate_ask_colleague" { crate::notes::ask_colleague(&a, &ctx, &args).await } else { crate::notes::ask_person(&a, &ctx, &args).await };
+        return match r {
+            Ok(r) => Json(json!({"ok": true, "result": crate::notes::attach(&a, &ctx, r)})).into_response(),
+            Err(e) => bad(&e).into_response(),
         };
     }
     match tools::call(&a.store, &ctx, &name, &args) {
         Ok(r) => {
+            let r = if name == "senate_inbox" { r } else { crate::notes::attach(&a, &ctx, r) };
             a.publish("attention", json!({}));
             // The preview button lives in the chat's state: tell the UI to reload the thread.
             if name == "senate_preview" {
@@ -1464,6 +1491,7 @@ async fn agent_sheet(State(a): S, Path(id): Path<String>) -> R {
     let apis = a.store.list_integrations()?;
     ok(json!({
         "agent": ag,
+        "effort": a.store.setting(&format!("effort:{}", ag.id))?.unwrap_or_default(),
         "stats": a.store.agent_stats(&ag.id)?,
         "projects": a.store.agent_projects(&ag.id)?,
         "obligations": a.store.list_obligations(Some(&ag.id), None, true)?.into_iter().take(12).collect::<Vec<_>>(),

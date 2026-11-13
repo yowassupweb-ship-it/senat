@@ -16,6 +16,7 @@ pub mod s3;
 mod project_git;
 mod reflect;
 mod uploads;
+mod notes;
 mod preview;
 mod usage;
 mod workspace;
@@ -101,6 +102,8 @@ pub struct App {
     pub(crate) matched: Mutex<std::collections::HashSet<String>>,
     /// Opens `/preview/<port>/` pages (see preview.rs); new on every start.
     pub(crate) preview_key: String,
+    /// Questions a specialist asked the person mid-work, by the message they are on: (question id, the answer's way back).
+    pub(crate) questions: Mutex<HashMap<String, (String, tokio::sync::oneshot::Sender<String>)>>,
 }
 
 impl App {
@@ -248,6 +251,7 @@ pub async fn serve(cfg: Config) -> Result<Handle, String> {
         machine_id: workspace::machine_identity(&cfg.data_dir).0,
         matched: Mutex::new(Default::default()),
         preview_key: preview::new_key(),
+        questions: Mutex::new(HashMap::new()),
     });
     accounts::rebuild_caps(&app);
     // Who is logged in is learned in the background: the window must open at once.

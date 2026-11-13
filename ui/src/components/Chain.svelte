@@ -4,17 +4,26 @@
   import Icon from './Icon.svelte';
   import Diff from './Diff.svelte';
 
-  let { steps, live = false, durationMs = 0 }: { steps: Step[]; live?: boolean; durationMs?: number } = $props();
+  // `body`: the answer itself — a remark in the chain that only repeats it is left out.
+  let { steps, live = false, durationMs = 0, body = '' }: { steps: Step[]; live?: boolean; durationMs?: number; body?: string } = $props();
 
   let open = $state(false);
+  // While the agent works the chain is open so you can watch — unless you fold it; when done it folds into one line.
+  let foldedLive = $state(false);
   let expanded = $state<Record<number, boolean>>({});
-  // While the agent works the chain is open so you can watch; when done it folds into one line.
-  const isOpen = $derived(live || open);
+  let sayOpen = $state<Record<number, boolean>>({});
+  const isOpen = $derived(live ? !foldedLive : open);
+  const toggle = () => (live ? (foldedLive = !foldedLive) : (open = !open));
   const tools = $derived(steps.filter((s) => s.kind === 'tool'));
   const VISIBLE = 5;
   let all = $state(false);
-  const indexed = $derived(steps.map((s, i) => ({ s, i })));
-  const shown = $derived(all || steps.length <= VISIBLE ? indexed : indexed.slice(-VISIBLE));
+  const norm = (t: string) => t.replace(/[*_`#>\-\s]+/g, ' ').trim().toLowerCase();
+  const answer = $derived(norm(body));
+  // A remark the answer already contains (the model streamed its answer before the last tool) is not said twice.
+  const repeats = (s: Step) => s.kind === 'text' && !!answer && !!s.text && answer.includes(norm(s.text).slice(0, 160));
+  const kept = $derived(steps.filter((s) => !repeats(s)));
+  const indexed = $derived(kept.map((s, i) => ({ s, i })));
+  const shown = $derived(all || kept.length <= VISIBLE ? indexed : indexed.slice(-VISIBLE));
   const errors = $derived(tools.filter((s) => s.is_error && s.status !== 'denied').length);
 
   function icon(name = ''): string {
@@ -38,7 +47,7 @@
 </script>
 
 <div class="chain" class:live>
-  <button class="head" onclick={() => (open = !open)} aria-expanded={isOpen}>
+  <button class="head" onclick={toggle} aria-expanded={isOpen}>
     <span class="chev" class:rot={isOpen}><Icon name="right" size={13} /></span>
     <strong>{#if live}Работает{:else if tools.length}Выполнено: {tools.length} {plural(tools.length)}{:else}Ход работы{/if}</strong>
     <span class="faint">
@@ -48,12 +57,16 @@
 
   {#if isOpen}
     <ol class="steps">
-      {#if !all && steps.length > VISIBLE}
-        <li><button class="more" onclick={() => (all = true)}>ещё {steps.length - VISIBLE} выше</button></li>
+      {#if !all && kept.length > VISIBLE}
+        <li><button class="more" onclick={() => (all = true)}>ещё {kept.length - VISIBLE} выше</button></li>
       {/if}
       {#each shown as { s, i } (i)}
         {#if s.kind === 'text'}
-          <li class="say">{s.text}</li>
+          {@const long = (s.text?.length ?? 0) > 280 || (s.text?.split('\n').length ?? 0) > 3}
+          <li class="say" class:clamped={long && !sayOpen[i]}>
+            {s.text}
+            {#if long}<button class="more" onclick={() => (sayOpen[i] = !sayOpen[i])}>{sayOpen[i] ? 'свернуть' : 'полностью'}</button>{/if}
+          </li>
         {:else}
           <li class="step" data-status={s.status}>
             <button class="srow" onclick={() => (expanded[i] = !expanded[i])} aria-expanded={!!expanded[i]}>
@@ -137,6 +150,17 @@
     color: var(--fg-2);
     padding: 3px 0;
     white-space: pre-wrap;
+    user-select: text;
+  }
+  .say.clamped {
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .say .more {
+    display: block;
   }
   .step .srow {
     display: flex;

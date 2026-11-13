@@ -243,6 +243,7 @@ pub(crate) async fn remote_run(app: &Arc<App>, mut spec: RunSpec, slug: &str, ma
 
     let started = Instant::now();
     let mut picked = false;
+    let mut cancelled_at: Option<Instant> = None;
     // Questions wait for a person, but must not hold up the loop: the card that shows the question travels as an
     // ordinary event through the same channel and would otherwise sit behind the very answer it is waiting for.
     let mut asks: futures_util::stream::FuturesUnordered<Pin<Box<dyn Future<Output = ()> + Send + '_>>> = futures_util::stream::FuturesUnordered::new();
@@ -270,6 +271,14 @@ pub(crate) async fn remote_run(app: &Arc<App>, mut spec: RunSpec, slug: &str, ma
             },
             _ = futures_util::StreamExt::next(&mut asks), if !asks.is_empty() => {}
             _ = tokio::time::sleep(Duration::from_secs(5)) => {
+                // Stopped by the person: the computer gets 15 s to wind down and report; after that the specialist is
+                // freed here anyway — a stuck CLI over there must not keep them "working" for an hour.
+                if *cancel.borrow() {
+                    let at = *cancelled_at.get_or_insert_with(Instant::now);
+                    if at.elapsed() > Duration::from_secs(15) {
+                        break Outcome { stopped: true, ..Default::default() };
+                    }
+                }
                 if !picked && started.elapsed() > Duration::from_secs(60) {
                     break fail("Приложение Senate на компьютере не взяло задачу за минуту. Проверьте, что оно запущено и подключено к этой ноде.");
                 }

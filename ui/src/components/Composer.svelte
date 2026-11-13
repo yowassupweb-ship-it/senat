@@ -14,6 +14,7 @@
 <script lang="ts">
   import { app } from '../lib/store.svelte';
   import { currentConnection, get, openExternal, post, upload, type Uploaded } from '../lib/api';
+  import { effortOptions, effortTitle, providerOf } from '../lib/effort';
   import { MODE_LABEL, N, count } from '../lib/format';
   import BrandMark from './BrandMark.svelte';
   import Avatar from './Avatar.svelte';
@@ -313,12 +314,10 @@
 
   const agentOpts = $derived([{ id: '', label: 'Авто', hint: 'Среда выберет специалиста по теме и @упоминаниям' }, ...app.agents.map((a) => ({ id: a.id, label: a.name, hint: a.role }))]);
   const modeOpts = Object.entries(MODE_LABEL).map(([id, v]) => ({ id, label: v.label, hint: v.hint }));
-  const effortOpts = [
-    { id: '', label: 'Обычное', hint: 'Баланс скорости и качества' },
-    { id: 'low', label: 'Быстро' },
-    { id: 'high', label: 'Тщательно', hint: 'Дольше думает, дороже по лимитам' },
-  ];
   const curAgent = $derived(app.agents.find((a) => a.id === settings.agent));
+  // the choices are the chosen specialist's provider's own; with several or "Авто" — the common three steps
+  const effortProvider = $derived(curAgent ? providerOf(curAgent.model_pref, app.defaultBackend) : '');
+  const effortOpts = $derived(effortOptions(effortProvider));
   const group = $derived((picked ?? []).map((id) => app.agents.find((a) => a.id === id)).filter((a): a is NonNullable<typeof a> => !!a));
   const groupLabel = $derived(group.length === 1 ? group[0].name : group.length === 2 ? `${group[0].name}, ${group[1].name}` : `${group.length} специалиста`);
   const effMode = $derived(settings.mode || projectMode || 'edit');
@@ -381,7 +380,7 @@
         <Dropdown value={effMode} options={modeOpts} up label="Режим разрешений" onpick={(id) => onchange({ ...settings, mode: id })}>
           {#snippet children(cur)}<Icon name="permissions" size={13} />{cur?.label}{/snippet}
         </Dropdown>
-        <Dropdown value={settings.effort} options={effortOpts} up label="Тщательность" onpick={(id) => onchange({ ...settings, effort: id })}>
+        <Dropdown value={settings.effort} options={effortOpts} up label={effortTitle(effortProvider)} onpick={(id) => onchange({ ...settings, effort: id })}>
           {#snippet children(cur)}<Icon name="effort" size={13} />{cur?.label}{/snippet}
         </Dropdown>
       {/if}

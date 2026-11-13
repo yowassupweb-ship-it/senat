@@ -242,7 +242,8 @@ pub fn resume_died_at_once(o: &Outcome) -> bool {
 /// straight to a fresh one: there is nothing to wait for, and the person should not see an error for it.
 pub async fn run(spec: RunSpec, approver: &dyn Approver, tx: EventTx, cancel: CancelRx) -> Outcome {
     let mut out = run_once(spec.clone(), approver, tx.clone(), cancel.clone()).await;
-    if spec.resume.is_some() && (session_is_lost(&out) || resume_died_at_once(&out)) && !*cancel.borrow() {
+    // a session held by an orphan is waited for below; anything else that kills a resume at once goes fresh now
+    if spec.resume.is_some() && !session_is_held(&out) && (session_is_lost(&out) || resume_died_at_once(&out)) && !*cancel.borrow() {
         let mut fresh = spec;
         fresh.resume = None;
         return run_once(fresh, approver, tx, cancel).await;

@@ -194,7 +194,33 @@ pub(crate) struct Proc {
     pub stdin: Option<ChildStdin>,
 }
 
+/// Its own process group on Unix, so a stop can take down everything the agent started (see `kill_tree`).
+pub(crate) fn own_group(cmd: &mut Command) {
+    #[cfg(unix)]
+    cmd.process_group(0);
+    #[cfg(not(unix))]
+    let _ = cmd;
+}
+
+/// Stop the agent and everything it started: a dev server run in the foreground (`npm run tauri dev`) is a child of
+/// the CLI's shell and would outlive a kill of the CLI alone, holding the turn open.
+pub(crate) async fn kill_tree(child: &mut tokio::process::Child) {
+    if let Some(pid) = child.id() {
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            let _ = std::process::Command::new("taskkill").args(["/T", "/F", "/PID", &pid.to_string()]).creation_flags(0x0800_0000).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status();
+        }
+        #[cfg(unix)]
+        {
+            let _ = std::process::Command::new("kill").args(["-KILL", &format!("-{pid}")]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status();
+        }
+    }
+    let _ = child.kill().await;
+}
+
 pub(crate) fn spawn(mut cmd: Command) -> std::io::Result<Proc> {
+    own_group(&mut cmd);
     cmd.stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).kill_on_drop(true);
     let mut child = cmd.spawn()?;
     let stdin = child.stdin.take();
@@ -237,6 +263,18 @@ pub(crate) async fn pump(p: &mut Proc, cancel: &mut CancelRx, limit: std::time::
             l = p.lines.recv() => match l { Some(l) => on_line(&l), None => return Ok(false) },
             _ = cancel.changed() => { if *cancel.borrow() { return Ok(true) } },
             _ = &mut deadline => return Err("Агент работал дольше двух часов — остановлен".into()),
+            // The CLI ended, but something it started (a dev server) may still hold its output open: read what is
+            // already there and finish, instead of waiting for a server that will never close it.
+            _ = p.child.wait() => {
+                let quiet = tokio::time::sleep(std::time::Duration::from_millis(500));
+                tokio::pin!(quiet);
+                loop {
+                    tokio::select! {
+                        l = p.lines.recv() => match l { Some(l) => on_line(&l), None => return Ok(false) },
+                        _ = &mut quiet => return Ok(false),
+                    }
+                }
+            }
         }
     }
 }

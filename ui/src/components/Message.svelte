@@ -11,6 +11,7 @@
   import Icon from './Icon.svelte';
   import { fileUrl } from '../lib/api';
   import PermissionCard from './PermissionCard.svelte';
+  import QuestionCard from './QuestionCard.svelte';
 
   let {
     m,
@@ -141,7 +142,7 @@
     </div>
   </div>
 {:else}
-  <div class="msg agent" data-status={m.status} class:handoff={!!p.call}>
+  <div class="msg agent" data-mid={m.id} data-status={m.status} class:handoff={!!p.call}>
     {#if p.call}
       {@const to = agentById(p.call.to)}
       <div class="relay">
@@ -165,11 +166,14 @@
     </div>
 
     {#if p.steps?.length}
-      <Chain steps={p.steps} live={working} durationMs={p.work?.duration_ms} />
+      <Chain steps={p.steps} live={working} durationMs={p.work?.duration_ms} body={m.body} />
     {/if}
 
     {#if p.ask && p.ask.kind === 'permission' && (p.ask.state === 'pending' || p.ask.state === 'denied' || p.ask.state === 'allowed') && (p.ask.state === 'pending' || working)}
       <PermissionCard ask={p.ask} onanswer={(allow, always) => onanswer(m, allow, always)} />
+    {/if}
+    {#if p.question}
+      <QuestionCard q={p.question} messageId={m.id} />
     {/if}
 
     {#if working && !m.body}

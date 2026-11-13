@@ -145,6 +145,26 @@ pub fn definitions() -> Vec<ToolDef> {
             schema: json!({"type":"object","properties":{"to":{"type":"string","description":"slug коллеги"},"request":{"type":"string"}},"required":["to","request"]}),
         },
         ToolDef {
+            name: "senate_message_colleague",
+            description: "Записка коллеге — предупреждение, совет, факт, который ему важен прямо сейчас (например: «не запускай npm run build, пока идёт tauri dev»). Доставляется всегда, без ограничений цепочки: если он сейчас работает, увидит её с ближайшим ответом любого инструмента Senate; если нет — в начале следующего хода. Ответ не ждёт; в результате видно, доставлено ли сейчас. Проверить, прочитал ли, — senate_inbox. urgent=true для того, что может что-то сломать.",
+            schema: json!({"type":"object","properties":{"to":{"type":"string","description":"slug коллеги"},"text":{"type":"string"},"urgent":{"type":"boolean"}},"required":["to","text"]}),
+        },
+        ToolDef {
+            name: "senate_inbox",
+            description: "Записки от коллег, которых ты ещё не видел, и судьба твоих записок (прочитана или ждёт). Во время долгой работы загляни сюда между крупными шагами: коллеги могут предупреждать о том, что мешает.",
+            schema: json!({"type":"object","properties":{}}),
+        },
+        ToolDef {
+            name: "senate_ask_colleague",
+            description: "Спросить коллегу и подождать ответа, не заканчивая свой ход: короткий вопрос по его части. Ждёт не дольше wait_seconds (по умолчанию 120, максимум 300). Не ответил вовремя (занят, выбит лимит, упал) — придёт статус и причина, а ответ, если он появится, вернётся к тебе отдельным ходом: продолжай по своему решению. Для долгой работы — senate_call_colleague или задача.",
+            schema: json!({"type":"object","properties":{"to":{"type":"string","description":"slug коллеги"},"question":{"type":"string"},"wait_seconds":{"type":"integer"}},"required":["to","question"]}),
+        },
+        ToolDef {
+            name: "senate_ask_person",
+            description: "Спросить человека посреди работы, не заканчивая ход: вопрос появится в чате с полем для ответа (и вариантами, если дашь options). Ждёт не дольше wait_seconds (по умолчанию 900, максимум 1800). Не ответил — продолжай по самому разумному варианту и скажи в итоге, что выбрал сам. Спрашивай только то, что нельзя решить самому.",
+            schema: json!({"type":"object","properties":{"question":{"type":"string"},"options":{"type":"array","items":{"type":"string"}},"wait_seconds":{"type":"integer"}},"required":["question"]}),
+        },
+        ToolDef {
             name: "senate_image_generate",
             description: "Сделать картинку по описанию: иллюстрацию, фон, заглушку, баннер. Опиши, что на ней, в каком стиле и для чего — коротким предложением на русском или английском, как принято у сервисов. Картинка сохраняется на этом компьютере и сразу показывается человеку в чате; в ответе придёт путь к файлу (path) — копируй её в папку проекта, если она нужна в работе. service — имя подключения из senate_api_list (если оно одно для картинок, не указывай), model — модель сервиса, size — размер вида 1024x1024. Ключи сервиса у ноды: тебе они не нужны и не выдаются.",
             schema: json!({"type":"object","properties":{"prompt":{"type":"string"},"size":{"type":"string"},"model":{"type":"string"},"service":{"type":"string"}},"required":["prompt"]}),
@@ -635,7 +655,35 @@ fn call_inner(store: &Store, ctx: &ToolCtx, name: &str, a: &Value, bypass: bool)
                 .map(|m| m.props["depth"].as_i64().unwrap_or(0))
                 .unwrap_or(0);
             let r = store.call_colleague(&caller, &tid, s(a, "to"), s(a, "request"), depth, &ctx.default_backend)?;
-            Ok(json!({"status": "called", "to": r["to"], "note": "коллега ответит в этом разговоре; ответ вернётся к тебе отдельным ходом"}))
+            Ok(json!({"status": "called", "to": r["to"], "message_id": r["message_id"], "note": "коллега ответит в этом разговоре; ответ вернётся к тебе отдельным ходом"}))
+        }
+        "senate_message_colleague" => {
+            let from = store.get_agent(&ctx.agent_id)?;
+            let to = store.get_agent(s(a, "to")).map_err(|_| Error::invalid(format!("нет коллеги «{}»: посмотри slug в senate_colleagues", s(a, "to"))))?;
+            if to.id == from.id {
+                return Err(Error::invalid("записка самому себе не нужна"));
+            }
+            let text: String = s(a, "text").trim().chars().take(4000).collect();
+            if text.is_empty() {
+                return Err(Error::invalid("пустая записка"));
+            }
+            let urgent = a.get("urgent").and_then(|v| v.as_bool()).unwrap_or(false);
+            let id = store.add_note(ctx.thread_id.as_deref(), &from.id, &to.id, &text, urgent)?;
+            // a visible trace in the chat, so the person sees what colleagues told each other
+            if let Some(t) = &ctx.thread_id {
+                let _ = store.post_message(t, "agent", Some(&from.id), &format!("Записка @{}: {}", to.slug, text), json!({"note": {"to": to.id, "id": id, "urgent": urgent}}), MessageStatus::Done, None);
+            }
+            let working = store.agent_running(&to.id)?;
+            Ok(json!({
+                "status": if working { "delivered_now" } else { "delivered_next_turn" },
+                "note_id": id,
+                "note": if working { format!("{} сейчас работает и увидит записку с ближайшим ответом инструмента Senate. Прочитана ли — senate_inbox.", to.name) } else { format!("{} сейчас не работает: увидит записку в начале следующего хода. Если это нужно сделать сейчас — senate_call_colleague или senate_ask_colleague.", to.name) },
+            }))
+        }
+        "senate_inbox" => {
+            let notes = store.take_notes(&ctx.agent_id)?;
+            let sent = store.sent_notes(&ctx.agent_id, 10)?;
+            Ok(json!({"new": notes, "sent": sent.iter().map(|n| json!({"to": n["to"], "text": n["text"], "read": !n["read_at"].is_null()})).collect::<Vec<_>>()}))
         }
         "senate_access_list" => {
             let list: Vec<Value> = store

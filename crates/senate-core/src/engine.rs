@@ -519,7 +519,10 @@ impl Store {
             return Err(Error::invalid("опиши, что нужно от коллеги: он не видит твоих мыслей"));
         }
         if depth >= MAX_DEPTH {
-            return Err(Error::invalid("цепочка вызовов уже длинная: доведи работу сам или спроси человека"));
+            return Err(Error::invalid(format!(
+                "НЕ ДОСТАВЛЕНО: цепочка вызовов уже длинная ({MAX_DEPTH}), {} этот запрос не получил и нового хода не будет. Важное предупреждение отправь записку senate_message_colleague — она доставляется всегда; иначе доведи работу сам или спроси человека. Не говори, что передал.",
+                target.name
+            )));
         }
         self.post_message(&thread.id, "agent", Some(&caller.id), &format!("→ @{}: {}", target.slug, request.trim()), serde_json::json!({"call": {"to": target.id}}), MessageStatus::Done, None)?;
         let backend = if !target.model_pref.is_empty() { target.model_pref.clone() } else { default_backend.to_string() };
