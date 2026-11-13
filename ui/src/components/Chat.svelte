@@ -208,10 +208,16 @@
       error = e.message;
     }
   }
-  function retry(m: Message) {
-    const i = messages.findIndex((x) => x.id === m.id);
-    const prev = [...messages.slice(0, i)].reverse().find((x) => x.author_kind === 'user');
-    if (prev) send(prev.body, prev.props?.attachments ?? []);
+  // The same specialist's turn again — not whoever the composer has picked, and without sending the person's
+  // message a second time.
+  async function retry(m: Message) {
+    error = '';
+    try {
+      const nm = await post(`/api/messages/${m.id}/retry`);
+      upsertMessage(nm);
+    } catch (e: any) {
+      error = e.message;
+    }
   }
 
   async function rename() {

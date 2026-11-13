@@ -919,3 +919,23 @@ fn a_call_past_the_chain_limit_says_plainly_it_was_not_delivered() {
     let e = st.call_colleague(&dev, &t.id, &arch.slug, "проверь", 3, "mock").unwrap_err().to_string();
     assert!(e.contains("НЕ ДОСТАВЛЕНО") && e.contains("senate_message_colleague"), "{e}");
 }
+
+#[test]
+fn a_retry_runs_the_same_specialists_turn_again() {
+    let (st, dev, arch, p) = setup();
+    let t = st.create_thread(NewThread { project_id: Some(p.id.clone()), agent_id: Some(dev.id.clone()), ..Default::default() }).unwrap();
+    // the architect was called by the developer, and that turn failed
+    let r = st.call_colleague(&dev, &t.id, &arch.slug, "проверь схему", 0, "mock").unwrap();
+    let failed = r["message_id"].as_str().unwrap().to_string();
+    st.update_message(&failed, None, Some(&json!({"error": "error_during_execution"})), Some(MessageStatus::Failed)).unwrap();
+    let users_before = st.list_messages(&t.id, None, 100).unwrap().iter().filter(|m| m.author_kind == "user").count();
+
+    let (m, s) = st.retry_message(&failed, "mock").unwrap();
+    assert_eq!(m.author_id.as_deref(), Some(arch.id.as_str()), "the architect again, whoever the chat is pinned to");
+    assert_eq!(s.agent_id, arch.id);
+    assert_eq!(m.props["asked_by"], json!(dev.id), "still an answer to the developer");
+    assert!(s.prompt.contains("проверь схему"), "the same task");
+    assert_eq!(st.get_message(&failed).unwrap().props["retried_by"], json!(m.id));
+    let users_after = st.list_messages(&t.id, None, 100).unwrap().iter().filter(|m| m.author_kind == "user").count();
+    assert_eq!(users_before, users_after, "the person's message is not sent twice");
+}

@@ -244,6 +244,8 @@ export interface PermissionRule {
 }
 
 export interface MessageProps {
+  /** This failed turn was run again: the new message. */
+  retried_by?: string;
   /** A question the specialist asked the person mid-work (senate_ask_person). */
   question?: { id: string; text: string; options?: string[]; state: 'pending' | 'answered' | 'expired'; answer?: string };
   steps?: Step[];

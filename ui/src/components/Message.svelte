@@ -217,7 +217,7 @@
           {#if why.hint}<span>{why.hint}</span>{/if}
           {#if p.error && why.title !== 'Ответ не получен'}<details><summary>Подробности</summary><code>{p.error}</code></details>{:else if p.error}<span class="raw">{p.error}</span>{/if}
         </div>
-        <button class="btn sm" onclick={() => onretry(m)}>Повторить</button>
+        {#if !p.retried_by}<button class="btn sm" onclick={() => onretry(m)} title={`Повторить ход: ${agent?.name ?? 'специалист'}`}>Повторить</button>{:else}<span class="faint">повторено ниже</span>{/if}
       </div>
     {/if}
     {#if p.fallback}<div class="note warn"><Icon name="alert" size={12} /> {p.fallback}</div>{/if}

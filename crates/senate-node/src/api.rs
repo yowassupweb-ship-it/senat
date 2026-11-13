@@ -98,6 +98,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/messages/:id/answer", post(answer))
         .route("/api/messages/:id/question", post(answer_question))
         .route("/api/messages/:id/cancel", post(cancel))
+        .route("/api/messages/:id/retry", post(retry_message))
         .route("/api/messages/:id/reflect", post(reflect_message))
         // specialists
         .route("/api/agents", get(agents).post(create_agent))
@@ -468,6 +469,18 @@ async fn permission_rule_add(State(a): S, Json(b): Json<Value>) -> R {
 async fn permission_rule_delete(State(a): S, Path(id): Path<String>) -> R {
     a.store.delete_permission_rule(&id)?;
     ok(json!({"ok": true}))
+}
+
+/// "Повторить": the same specialist's turn again (not whoever the composer has picked).
+async fn retry_message(State(a): S, Path(id): Path<String>) -> R {
+    let (msg, _) = a.store.retry_message(&id, &a.backend_default())?;
+    a.wake.notify_waiters();
+    if let Ok(old) = a.store.get_message(&id) {
+        a.publish("message", serde_json::to_value(&old).unwrap_or_default());
+    }
+    a.publish("message", serde_json::to_value(&msg).unwrap_or_default());
+    a.publish("thread", json!({"id": msg.thread_id}));
+    ok(msg)
 }
 
 /// The person answers a question a specialist asked mid-work (`senate_ask_person`).

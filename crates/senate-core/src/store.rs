@@ -2438,6 +2438,32 @@ impl Store {
             .ok_or_else(|| Error::not_found(format!("сессия {id}")))
     }
 
+    /// The session that wrote a message (the latest one, if it was written more than once).
+    pub fn session_of_message(&self, message_id: &str) -> Result<Option<Session>> {
+        Ok(self.lock().query_row(&format!("SELECT {SESSION_COLS} FROM sessions WHERE message_id=? ORDER BY created_at DESC LIMIT 1"), [message_id], session_from).optional()?)
+    }
+
+    /// Run a turn again: the same specialist, the same task and chat, on their model of today; the person's message
+    /// is not sent twice. A call from a colleague stays a call (its answer still goes back to them).
+    pub fn retry_message(&self, message_id: &str, default_backend: &str) -> Result<(Message, Session)> {
+        let old = self.get_message(message_id)?;
+        let s = self.session_of_message(message_id)?.ok_or_else(|| Error::invalid("у этого ответа нет хода, который можно повторить"))?;
+        let agent = self.get_agent(&s.agent_id)?;
+        let backend = if !agent.model_pref.is_empty() { agent.model_pref.clone() } else { default_backend.to_string() };
+        let mut props = serde_json::json!({"backend": backend, "effort": old.props["effort"], "phase": "в очереди", "steps": [], "retry_of": old.id});
+        for k in ["asked_by", "reply_from", "depth", "request"] {
+            if !old.props[k].is_null() {
+                props[k] = old.props[k].clone();
+            }
+        }
+        let tid = s.thread_id.clone().or(Some(old.thread_id.clone()));
+        let msg = self.post_message(&old.thread_id, "agent", Some(&agent.id), "", props, MessageStatus::Queued, None)?;
+        let ns = self.create_session(&agent.id, s.obligation_id.as_deref(), tid.as_deref(), Some(&msg.id), &format!("повтор: {}", s.reason), &backend, &s.prompt)?;
+        // the failed answer gives way: no second retry button on it
+        let _ = self.update_message(&old.id, None, Some(&serde_json::json!({"retried_by": msg.id})), None);
+        Ok((msg, ns))
+    }
+
     pub fn list_sessions(&self, agent_id: Option<&str>, obligation_id: Option<&str>, status: Option<SessionStatus>, limit: i64) -> Result<Vec<Session>> {
         let c = self.lock();
         let mut sql = format!("SELECT {SESSION_COLS} FROM sessions WHERE 1=1");
