@@ -498,21 +498,27 @@
               {@const asks = asksOf(it.p.calls)}
               {@const members = [...new Set(asks.flatMap((x) => x.to))]}
               {@const called = members.length}
-              {@const shut = !!folded[it.p.key]}
+              {@const shut = folded[it.p.key] ?? true}
               {@const done = new Set(it.p.comments.filter((c) => c.props.asked_by && (c.status === 'done' || c.status === 'failed')).map((c) => c.author_id)).size}
               {@const verdict = it.p.decision ? decisionLine(it.p.decision) : ''}
+              {@const stateOf = (id: string) => { const c = it.p.comments.find((x) => x.author_id === id && x.props.asked_by); return !c ? 'wait' : c.status === 'failed' ? 'bad' : c.status === 'done' ? 'ok' : 'live'; }}
+              {@const stillWorking = !it.p.decision && (done < called || it.p.comments.some((c) => c.status === 'working' || c.status === 'queued'))}
               <section class="post" class:shut aria-label="Заседание совета">
-                <div class="ph">
-                  <button class="fold" onclick={() => (folded[it.p.key] = !shut)} aria-expanded={!shut} aria-label={shut ? 'Развернуть обсуждение' : 'Свернуть обсуждение'} title={shut ? 'Развернуть' : 'Свернуть'}><Icon name={shut ? 'right' : 'down'} size={13} /></button>
+                <button class="ph" onclick={() => (folded[it.p.key] = !shut)} aria-expanded={!shut} title={shut ? 'Развернуть' : 'Свернуть'}>
+                  <span class="chev" class:open={!shut}><Icon name="right" size={11} /></span>
                   <Avatar name={who?.name} color={who?.accent} size={22} />
-                  <b>{who?.name ?? 'Специалист'}</b>
-                  <span class="gather"><Icon name="users" size={12} />{called > 1 ? 'Заседание совета' : 'зовёт коллегу'}</span>
-                  {#if !shut && called > 1 && done < called && !it.p.decision}<span class="faint sum">ответили {done} из {called}, {who?.name ?? 'ведущий'} ждёт всех</span>{/if}
-                  {#if shut && !verdict}<span class="faint sum">{called} {called === 1 ? 'участник' : called < 5 ? 'участника' : 'участников'} · {it.p.comments.length} {it.p.comments.length % 10 === 1 && it.p.comments.length % 100 !== 11 ? 'ответ' : [2, 3, 4].includes(it.p.comments.length % 10) && ![12, 13, 14].includes(it.p.comments.length % 100) ? 'ответа' : 'ответов'}{#if it.p.comments.some((c) => c.status === 'working' || c.status === 'queued')} · идёт{/if}</span>{/if}
+                  <span class="ptitle"><b>{who?.name ?? 'Специалист'}</b> {called > 1 ? 'собрал совет' : 'позвал коллегу'}</span>
+                  <span class="faces" aria-hidden="true">
+                    {#each members as id (id)}
+                      {@const ma = agentById(id)}
+                      <span class="face {stateOf(id)}" title={`${ma?.name ?? 'Коллега'}`}><Avatar name={ma?.name} color={ma?.accent} size={22} /></span>
+                    {/each}
+                  </span>
+                  <span class="pstate" class:live={stillWorking}>{#if stillWorking}<span class="loader"></span>ответили {done} из {called}{:else if it.p.decision}<Icon name="check" size={12} />решение готово{:else}ответили {done} из {called}{/if}</span>
                   <time class="faint">{new Date(it.p.calls[0].created_at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}</time>
-                </div>
+                </button>
                 {#if shut && verdict}
-                  <button class="verdict-line" onclick={() => (folded[it.p.key] = false)} title={verdict}><span class="vl">Решение совета</span>{verdict}</button>
+                  <button class="verdict-line" onclick={() => (folded[it.p.key] = false)} title={verdict}><span class="vl">Решение</span>{verdict}</button>
                 {/if}
                 {#if !shut}
                 {#each asks as ask (ask.key)}
@@ -684,8 +690,29 @@
   }
   /* a discussion: the calls as a post, the answers as comments under it */
   .post {
-    margin: 6px 0 10px;
+    margin: 8px 0 12px;
+    padding: 6px 12px 8px;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: var(--bg-raised);
   }
+  .post .ph { width: 100%; text-align: left; font-size: 12px; min-height: 28px; border-radius: var(--radius-s); }
+  .post .chev { display: inline-flex; color: var(--fg-3); transition: transform .15s var(--ease); }
+  .post .chev.open { transform: rotate(90deg); }
+  .ptitle { color: var(--fg-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  .ptitle b { color: var(--fg); font-weight: 600; }
+  .faces { display: inline-flex; margin-left: 2px; }
+  .face { position: relative; display: inline-flex; border-radius: 50%; box-shadow: 0 0 0 2px var(--bg-raised); }
+  .face + .face { margin-left: -6px; }
+  .face.wait { opacity: .45; }
+  .face.live::after { content: ''; position: absolute; inset: -2px; border-radius: 50%; border: 2px solid transparent; border-top-color: var(--fg-2); animation: sq-spin .9s linear infinite; }
+  .face.ok::after, .face.bad::after { content: ''; position: absolute; right: -2px; bottom: -2px; width: 8px; height: 8px; border-radius: 50%; box-shadow: 0 0 0 2px var(--bg-raised); background: var(--ok); }
+  .face.bad::after { background: var(--bad); }
+  .pstate { margin-left: auto; display: inline-flex; align-items: center; gap: 5px; color: var(--fg-3); font-size: 11px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .pstate.live { color: var(--fg-2); }
+  .post .loader { width: 10px; height: 10px; border-radius: 50%; border: 1.5px solid var(--line-strong); border-top-color: var(--fg); animation: sq-spin .8s linear infinite; }
+  @keyframes sq-spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .face.live::after, .post .loader { animation-duration: 2.4s; } }
   .ph {
     display: flex;
     align-items: center;
@@ -769,8 +796,8 @@
   .answers-toggle .faint { font-weight: 400; }
   .verdict-line {
     display: block;
-    width: calc(100% - 30px);
-    margin: 0 0 6px 30px;
+    width: 100%;
+    margin: 2px 0 2px;
     text-align: left;
     font-size: 13px;
     color: var(--fg);
