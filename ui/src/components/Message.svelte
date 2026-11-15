@@ -40,6 +40,7 @@
     if (p.phase === 'останавливается') stopping = true;
     if (!working) stopping = false;
   });
+  let sumOpen = $state(false);
   let applying = $state(false);
   let reflecting = $state(false);
 
@@ -128,8 +129,23 @@
   const ctxPct = $derived(p.work?.context_window ? Math.round(((p.work.context_tokens ?? 0) / p.work.context_window) * 100) : 0);
 </script>
 
-{#if m.author_kind === 'system'}
+{#if m.author_kind === 'system' && /^Контекст сжат/.test(m.body)}
+  <!-- the compaction card already says it: the node's own "Контекст сжат" line would only repeat it -->
+{:else if m.author_kind === 'system'}
   <div class="sys">{m.body}</div>
+{:else if m.author_kind === 'agent' && p.compact}
+  <div class="squeeze" class:failed={m.status === 'failed'} role="status">
+    <span class="sq-icon" aria-hidden="true">
+      {#if working}<span class="loader"></span>{:else}<Icon name={m.status === 'failed' ? 'alert' : 'check'} size={13} />{/if}
+    </span>
+    <span class="sq-text">
+      <b>{m.status === 'failed' ? 'Сжать не удалось' : working ? 'Сжимаю контекст' : 'Контекст сжат'}</b>
+      <small>{agent?.name ?? 'Специалист'}{working ? ` · ${m.status === 'queued' ? 'в очереди' : `${elapsed} с`}` : m.status === 'failed' ? ' · прежний контекст сохранён' : ' · продолжит со своей сводкой'}</small>
+    </span>
+    {#if m.status === 'done' && m.body}<button class="sq-more" aria-expanded={sumOpen} onclick={() => (sumOpen = !sumOpen)}>{sumOpen ? 'Скрыть' : 'Сводка'}</button>{/if}
+    {#if working}<button class="icon-btn sq-x" aria-label="Остановить сжатие" title="Остановить" onclick={() => onstop(m)}><Icon name="x" size={12} /></button>{/if}
+  </div>
+  {#if sumOpen && m.body}<div class="sq-body">{@html html}</div>{/if}
 {:else if m.author_kind === 'user'}
   <div class="msg user">
     <div class="bubble">
@@ -656,4 +672,17 @@
     font-size: 12.5px;
     padding: 8px 0;
   }
+  .squeeze { display: flex; align-items: center; gap: 10px; width: fit-content; max-width: min(100%, 26rem); margin: 6px 0; padding: 7px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg-raised); font-size: 12px; }
+  .squeeze.failed { background: var(--bad-soft); }
+  .sq-icon { flex: none; display: grid; place-items: center; width: 18px; height: 18px; color: var(--fg-2); }
+  .squeeze.failed .sq-icon { color: var(--bad); }
+  .loader { width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--line-strong); border-top-color: var(--fg); animation: sq-spin .8s linear infinite; }
+  @keyframes sq-spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .loader { animation-duration: 2.4s; } }
+  .sq-text { min-width: 0; display: grid; gap: 1px; }
+  .sq-text b { font-weight: 600; color: var(--fg); }
+  .sq-text small { color: var(--fg-3); font-size: 11px; font-variant-numeric: tabular-nums; }
+  .sq-more { margin-left: 6px; padding: 2px 8px; border-radius: 6px; color: var(--fg-2); font-size: 11px; }
+  .sq-more:hover { background: var(--bg-hover); color: var(--fg); }
+  .sq-body { max-width: 40rem; margin: 0 0 8px; padding: 8px 12px; border-left: 2px solid var(--line-strong); color: var(--fg-2); font-size: 12px; max-height: 16rem; overflow-y: auto; }
 </style>
