@@ -27,3 +27,5 @@ pub fn now_ms() -> i64 {
 pub fn new_id() -> String {
     uuid::Uuid::now_v7().simple().to_string()
 }
+
+pub mod chat_control;

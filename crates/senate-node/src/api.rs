@@ -87,6 +87,8 @@ pub fn router(app: Arc<App>) -> Router {
         // chats
         .route("/api/threads", get(threads).post(create_thread))
         .route("/api/threads/:id", get(get_thread).patch(patch_thread))
+        .route("/api/threads/:id/context", get(chat_context).post(control_context))
+        .route("/api/threads/:id/workspace", get(workspace_status).post(bind_workspace))
         .route("/api/import/threads", post(import_threads))
         .route("/api/threads/:id/messages", get(messages).post(send))
         // files the person attaches (screenshots): one upload per file, then messages refer to them by id
@@ -196,6 +198,8 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/preview/:port/*rest", axum::routing::any(crate::preview::handle));
 
     api.fallback(static_ui)
+        // The default predicate excludes SSE, so streaming events are never buffered by gzip.
+        .layer(tower_http::compression::CompressionLayer::new())
         .layer(middleware::from_fn_with_state(app.clone(), auth))
         .layer(tower_http::cors::CorsLayer::permissive())
         .with_state(app)
@@ -223,6 +227,7 @@ async fn live(State(a): S) -> R {
             };
             out.push(json!({
                 "session_id": s.id, "agent_id": s.agent_id, "kind": kind, "title": title,
+                "workspace": a.store.session_workplace(&s).unwrap_or(Value::Null),
                 "thread_id": s.thread_id, "obligation_id": s.obligation_id, "message_id": s.message_id,
                 "status": s.status.as_str(), "since": s.started_at.unwrap_or(s.created_at),
                 "phase": props["phase"].as_str().unwrap_or(""), "hint": hint,
@@ -292,7 +297,14 @@ async fn threads(State(a): S, Query(q): Query<HashMap<String, String>>) -> R {
 }
 
 async fn create_thread(State(a): S, Json(b): Json<Value>) -> R {
+    let _guard = a.chat_send.lock().unwrap();
+    let reuse = b["reuse_project"] == true;
     let n: NewThread = de(b)?;
+    if reuse {
+        if let Some(pid) = n.project_id.as_deref() {
+            if let Some(t) = a.store.list_threads(Some(pid),false)?.into_iter().find(|t|t.kind == ThreadKind::Chat) { return ok(t); }
+        }
+    }
     let t = a.store.create_thread(n)?;
     a.publish("thread", json!({"id": t.id}));
     ok(t)
@@ -300,6 +312,56 @@ async fn create_thread(State(a): S, Json(b): Json<Value>) -> R {
 
 async fn get_thread(State(a): S, Path(id): Path<String>) -> R {
     ok(a.store.get_thread(&id)?)
+}
+
+async fn chat_context(State(a): S, Path(id): Path<String>) -> R {
+    ok(a.store.chat_context(&id)?)
+}
+async fn control_context(State(a): S, Path(id): Path<String>, Json(b): Json<Value>) -> R {
+    let _guard = a.chat_send.lock().unwrap();
+    if let Some(enabled) = b["auto"].as_bool() { a.store.set_forum_meta(&id,&json!({"context_auto":enabled}))?; }
+    if b["compact"] == true {
+        let state = a.store.chat_context(&id)?;
+        for row in state["participants"].as_array().into_iter().flatten() {
+            let Some(agent) = row["id"].as_str() else { continue };
+            if let Some(run) = a.store.queue_chat_compact(&id,agent,&a.backend_default(),b["instructions"].as_str().unwrap_or(""),false)? {
+                if let Some(mid) = run.message_id { a.publish("message",serde_json::to_value(a.store.get_message(&mid)?).unwrap_or_default()); }
+            }
+        }
+    }
+    a.publish("thread",json!({"id":id}));
+    a.poke();
+    ok(a.store.chat_context(&id)?)
+}
+async fn workspace_status(State(a): S, Path(id): Path<String>) -> R { ok(chat_workspace_status(&a,&id)?) }
+fn chat_workspace_status(a: &Arc<App>, tid: &str) -> Result<Value,ApiError> {
+    let t=a.store.get_thread(tid)?;
+    let project=t.project_id.as_deref().map(|id|a.store.get_project(id)).transpose()?;
+    let locations=match &project {Some(p)=>a.store.workspace_locations(&p.id)?,None=>json!([])};
+    let machines:Vec<Value>=a.store.list_nodes()?.iter().map(|m|json!({"id":m.id,"name":m.name,"kind":m.kind,"online":m.id==a.machine_id || a.runner.machine_online(&m.id)})).collect();
+    Ok(json!({"project":project,"locations":locations,"machines":machines,"node_machine":a.machine_id,"note":"Путь имеет смысл только вместе с machine. Смена активного места не копирует файлы. Текущие запуски остаются на прежнем месте."}))
+}
+async fn bind_workspace(State(a): S, Path(id): Path<String>, Json(b): Json<Value>) -> R {
+    ok(bind_chat_workspace(&a,&id,&b).await?)
+}
+async fn bind_chat_workspace(a: &Arc<App>, tid: &str, b: &Value) -> Result<Value,ApiError> {
+    let t = a.store.get_thread(tid)?;
+    let pid = t.project_id.ok_or_else(|| bad("Сначала привяжи чат к проекту: senate_attach; новый проект — senate_project_create"))?;
+    let p = a.store.get_project(&pid)?;
+    let path = b["path"].as_str().map(str::trim).filter(|s|!s.is_empty()).ok_or_else(||bad("нужен абсолютный path"))?;
+    let absolute = path.starts_with('/') || path.starts_with("\\\\") || (path.as_bytes().get(1)==Some(&b':') && matches!(path.as_bytes().get(2),Some(b'/' | b'\\')));
+    if !absolute { return Err(bad("укажи абсолютный путь к папке")); }
+    let machine = b["machine"].as_str().unwrap_or(p.node_id.as_deref().unwrap_or(""));
+    if on_machine(a,machine,"is_dir",json!({"path":path})).await?["is_dir"] != true { return Err(bad("папки нет на выбранном компьютере")); }
+    let git = on_machine(a,machine,"git_status",json!({"root":path})).await.unwrap_or_else(|e|json!({"available":false,"reason":e.1}));
+    if path != p.root_path || machine != p.node_id.as_deref().unwrap_or("") {
+        a.store.set_setting(&format!("workspace_revision:{pid}"),&senate_core::new_id())?;
+    }
+    a.store.remember_workspace(&pid,machine,path)?;
+    let p = a.store.update_project(&pid,ProjectPatch { root_path:Some(path.into()),node_id:Some(machine.into()),..Default::default() })?;
+    a.publish("projects",json!({}));
+    a.publish("thread",json!({"id":tid}));
+    Ok(json!({"status":"bound","project":p,"git":git,"note":"Папка привязана. Git отображается под композером, если в папке есть репозиторий. Следующий запуск работает в новой папке; текущий процесс не перемещён."}))
 }
 
 async fn patch_thread(State(a): S, Path(id): Path<String>, Json(b): Json<Value>) -> R {
@@ -327,8 +389,9 @@ async fn import_threads(State(a): S, Json(b): Json<Value>) -> R {
 }
 
 async fn messages(State(a): S, Path(id): Path<String>, Query(q): Query<HashMap<String, String>>) -> R {
-    let mut list = a.store.list_messages(&id, q.get("before").map(|s| s.as_str()), 61)?;
-    let has_more = list.len() > 60;
+    let limit = q.get("limit").and_then(|n| n.parse::<i64>().ok()).unwrap_or(60).clamp(1, 100);
+    let mut list = a.store.list_messages(&id, q.get("before").map(|s| s.as_str()), limit + 1)?;
+    let has_more = list.len() > limit as usize;
     if has_more {
         list.remove(0);
     }
@@ -337,19 +400,47 @@ async fn messages(State(a): S, Path(id): Path<String>, Query(q): Query<HashMap<S
 
 async fn send(State(a): S, Path(id): Path<String>, Json(mut b): Json<Value>) -> R {
     b["thread_id"] = json!(id);
+    let payload = b.to_string();
     let mut req: ChatSend = de(b)?;
     // The client names files by id only; what they are and where they lie is the node's own knowledge.
     req.attachments = uploads::resolve(&a.cfg.data_dir, &req.attachments);
     if req.text.trim().is_empty() && req.attachments.is_empty() {
         return Err(bad("пустое сообщение"));
     }
-    let d = a.store.send_chat(req, &a.backend_default())?;
+    let client_id = req.client_id.clone().filter(|s| !s.is_empty());
+    if client_id.as_ref().is_some_and(|s| s.len() > 100 || !s.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')) {
+        return Err(bad("неверный идентификатор отправки"));
+    }
+    // Memory lookup and SQLite work must not block the async worker that delivers chat events.
+    let worker = a.clone();
+    let tid = id.clone();
+    let (d, replayed) = tokio::task::spawn_blocking(move || -> Result<(Value, bool), ApiError> {
+        let _guard = worker.chat_send.lock().unwrap();
+        if let Some(key) = &client_id {
+            if let Some(mut saved) = worker.store.begin_chat_request(&tid, key, &payload)? {
+                if saved.is_null() { return Err(ApiError(StatusCode::CONFLICT, "Предыдущая отправка прервалась. Проверьте чат перед новой отправкой.".into())); }
+                if let Some(messages) = saved["agent_messages"].as_array_mut() {
+                    for m in messages {
+                        if let Some(current) = m["id"].as_str().and_then(|id| worker.store.get_message(id).ok()) { *m = serde_json::to_value(current).unwrap_or_default(); }
+                    }
+                }
+                return Ok((saved, true));
+            }
+        }
+        let sent = worker.store.send_chat(req, &worker.backend_default())?;
+        // The chat needs receipts, not copies of full agent prompts and outputs.
+        let response = json!({"user_message": sent.user_message, "agent_messages": sent.agent_messages,
+            "sessions": sent.sessions.iter().map(|s| json!({"id":s.id,"agent_id":s.agent_id,"thread_id":s.thread_id,"status":s.status,"created_at":s.created_at})).collect::<Vec<_>>()});
+        if let Some(key) = &client_id { worker.store.finish_chat_request(&tid, key, &response)?; }
+        Ok((response, false))
+    }).await.map_err(|_| bad("не удалось завершить отправку"))??;
+    if replayed { return ok(d); }
     if a.store.get_thread(&id)?.kind == ThreadKind::Forum {
         forum::on_user_message(&a, &id);
     }
-    a.publish("message", serde_json::to_value(&d.user_message).unwrap_or_default());
-    for m in &d.agent_messages {
-        a.publish("message", serde_json::to_value(m).unwrap_or_default());
+    a.publish("message", d["user_message"].clone());
+    for m in d["agent_messages"].as_array().into_iter().flatten() {
+        a.publish("message", m.clone());
     }
     a.publish("thread", json!({"id": id}));
     a.poke();
@@ -731,7 +822,7 @@ async fn project_detail(State(a): S, Path(id): Path<String>) -> R {
         "project": p,
         "members": a.store.project_members(&id)?,
         "decisions": a.store.list_decisions(&id)?,
-        "obligations": a.store.list_obligations(None, Some(&id), false)?.into_iter().take(80).collect::<Vec<_>>(),
+        "obligations": a.store.list_obligations(None, Some(&id), false)?,
         "artifacts": a.store.list_artifacts(Some(&id))?,
         "threads": thread_views(&a, Some(&id), false)?,
         "memory": a.store.list_memory(Some(MemoryLevel::Project), None, Some(&id), false, 60)?,
@@ -1036,6 +1127,7 @@ async fn obligation_detail(State(a): S, Path(id): Path<String>) -> R {
     let o = a.store.get_obligation(&id)?;
     let thread = a.store.setting(&format!("obl-thread:{id}"))?;
     ok(json!({
+        "dependencies": o.dependencies.iter().filter_map(|id| a.store.get_obligation(id).ok()).collect::<Vec<_>>(),
         "obligation": o,
         "journal": a.store.events(Some("obligation"), Some(&id), 60)?,
         "sessions": a.store.list_sessions(None, Some(&id), None, 20)?,
@@ -1045,6 +1137,14 @@ async fn obligation_detail(State(a): S, Path(id): Path<String>) -> R {
 }
 
 async fn patch_obligation(State(a): S, Path(id): Path<String>, Json(b): Json<Value>) -> R {
+    if b.get("dependencies").is_some() || b.get("reviewer_id").is_some() {
+        let current = a.store.get_obligation(&id)?;
+        let dependencies = if let Some(v) = b.get("dependencies") { de::<Vec<String>>(v.clone())? } else { current.dependencies };
+        let reviewer = if b.get("reviewer_id").is_some() { b["reviewer_id"].as_str() } else { current.reviewer_id.as_deref() };
+        a.store.configure_teamwork(&id, &dependencies, reviewer, "user")?;
+        a.publish("attention", json!({}));
+        a.poke();
+    }
     let due = if b.get("due_at").is_some() { Some(b["due_at"].as_i64()) } else { None };
     ok(a.store.update_obligation_fields(&id, b["title"].as_str(), b["result"].as_str(), b["criteria"].as_str(), b["next_step"].as_str(), due, "user")?)
 }
@@ -1064,6 +1164,7 @@ async fn transition(State(a): S, Path(id): Path<String>, Json(b): Json<Value>) -
             outcome: b["outcome"].as_str().map(String::from),
             next_step: b["next_step"].as_str().map(String::from),
             note: b["note"].as_str().unwrap_or("").into(),
+            evidence: b["evidence"].as_str().map(String::from),
         },
         "user",
     )?;
@@ -1366,6 +1467,25 @@ async fn agent_call(State(a): S, req: Request) -> Response {
     let v: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
     let name = v["name"].as_str().unwrap_or("").to_string();
     let args = v["args"].clone();
+    if name == "senate_workspace" && args["action"] == "status" {
+        let Some(tid)=ctx.thread_id.as_deref() else { return bad("нет чата").into_response() };
+        return match chat_workspace_status(&a,tid) { Ok(r)=>Json(json!({"ok":true,"result":r})).into_response(),Err(e)=>e.into_response() };
+    }
+    if name == "senate_workspace" && matches!(args["action"].as_str(),Some("tree"|"read")) {
+        let Some(tid)=ctx.thread_id.as_deref() else { return bad("нет чата").into_response() };
+        let (root,machine,_)=match thread_files(&a,tid) {Ok(p)=>p,Err(e)=>return e.into_response()};
+        let op=if args["action"]=="tree" {"tree"} else {"read"};
+        return match on_machine(&a,&machine,op,json!({"root":root,"path":args["path"].as_str().unwrap_or("")})).await {
+            Ok(r)=>Json(json!({"ok":true,"result":r})).into_response(),Err(e)=>e.into_response()
+        };
+    }
+    if name == "senate_workspace" && args["action"] == "bind" {
+        let Some(tid) = ctx.thread_id.as_deref() else { return bad("нет чата").into_response() };
+        return match bind_chat_workspace(&a,tid,&args).await {
+            Ok(r) => Json(json!({"ok":true,"result":r})).into_response(),
+            Err(e) => e.into_response(),
+        };
+    }
     if name == "senate_api_call" {
         return match external::api_call(&a, &ctx, &args, false).await {
             Ok(r) => Json(json!({"ok": true, "result": r})).into_response(),
@@ -1391,7 +1511,7 @@ async fn agent_call(State(a): S, req: Request) -> Response {
             let r = if name == "senate_inbox" { r } else { crate::notes::attach(&a, &ctx, r) };
             a.publish("attention", json!({}));
             // The preview button lives in the chat's state: tell the UI to reload the thread.
-            if name == "senate_preview" {
+            if matches!(name.as_str(), "senate_preview" | "senate_attach" | "senate_chat_context") {
                 if let Some(t) = &ctx.thread_id {
                     a.publish("thread", json!({"id": t}));
                 }

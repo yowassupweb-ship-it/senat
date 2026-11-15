@@ -380,6 +380,28 @@ CREATE TABLE agent_notes (
 );
 CREATE INDEX agent_notes_to ON agent_notes(to_agent, delivered_at);
 "#,
+    // 12 - durable receipts: retrying an HTTP send must not start a second agent turn.
+    r#"
+CREATE TABLE chat_requests (
+  thread_id TEXT NOT NULL REFERENCES threads(id),
+  request_id TEXT NOT NULL,
+  payload TEXT NOT NULL,
+  response TEXT,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY(thread_id, request_id)
+);
+"#,
+    // 13 - durable prerequisites and independent result review.
+    r#"
+ALTER TABLE obligations ADD COLUMN dependencies TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE obligations ADD COLUMN reviewer_id TEXT REFERENCES agents(id);
+ALTER TABLE obligations ADD COLUMN evidence TEXT NOT NULL DEFAULT '';
+ALTER TABLE agent_notes ADD COLUMN acknowledged_at INTEGER;
+ALTER TABLE sessions ADD COLUMN workspace_machine TEXT;
+ALTER TABLE sessions ADD COLUMN workspace_root TEXT;
+UPDATE obligations SET dependencies=json_array(json_extract(wait_condition,'$.id'))
+WHERE json_extract(wait_condition,'$.type')='obligation';
+"#,
 ];
 
 pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {

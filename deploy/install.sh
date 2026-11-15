@@ -41,6 +41,15 @@ docker image inspect senate-node:latest >/dev/null 2>&1 && docker tag senate-nod
 
 echo "Сборка образа (первый раз — несколько минут)…"
 SENATE_PORT="$PORT" docker compose -p senate build
+# Work may have started during the image build. Check again immediately before replacing the node.
+if docker ps --format '{{.Names}}' | grep -qx senate-node && [ "${SENATE_ALLOW_INTERRUPT:-0}" != 1 ]; then
+  deploy_token="$(docker exec senate-node cat /data/token)"
+  live_json="$(curl -fsS --max-time 10 -H "Authorization: Bearer $deploy_token" "http://127.0.0.1:$PORT/api/live")" || { echo "Не удалось проверить активные задачи; перезапуск отменён"; exit 2; }
+  if printf '%s' "$live_json" | grep -q '"session_id"'; then
+    echo "Во время сборки началась работа. Новый образ готов, перезапуск отложен. Повторите выкладку после завершения задач."
+    exit 2
+  fi
+fi
 SENATE_PORT="$PORT" docker compose -p senate up -d
 
 for i in $(seq 1 60); do

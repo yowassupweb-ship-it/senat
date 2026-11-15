@@ -62,7 +62,7 @@ fn project_from(r: &Row) -> rusqlite::Result<Project> {
     })
 }
 
-const OBL_COLS: &str = "id,title,result,criteria,owner_id,project_id,parent_id,requested_by,state,next_step,wait_condition,blocker,outcome,due_at,budget_tokens,spent_tokens,created_at,updated_at";
+const OBL_COLS: &str = "id,title,result,criteria,owner_id,project_id,parent_id,requested_by,state,next_step,wait_condition,blocker,outcome,due_at,budget_tokens,spent_tokens,created_at,updated_at,dependencies,reviewer_id,evidence";
 fn obligation_from(r: &Row) -> rusqlite::Result<Obligation> {
     let wait: Option<String> = r.get(10)?;
     Ok(Obligation {
@@ -84,6 +84,9 @@ fn obligation_from(r: &Row) -> rusqlite::Result<Obligation> {
         spent_tokens: r.get(15)?,
         created_at: r.get(16)?,
         updated_at: r.get(17)?,
+        dependencies: serde_json::from_str(&r.get::<_, String>(18)?).unwrap_or_default(),
+        reviewer_id: r.get(19)?,
+        evidence: r.get(20)?,
     })
 }
 
@@ -694,12 +697,13 @@ impl Store {
         }
         let c = self.lock();
         let id = new_id();
+        validate_teamwork(&c, &id, n.project_id.as_deref(), n.owner_id.as_deref(), &n.dependencies, n.reviewer_id.as_deref())?;
         let now = now_ms();
         let by = if n.requested_by.is_empty() { "user".to_string() } else { n.requested_by.clone() };
         c.execute(
-            "INSERT INTO obligations(id,title,result,criteria,owner_id,project_id,parent_id,requested_by,next_step,due_at,budget_tokens,created_at,updated_at)
-             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            params![id, n.title.trim(), n.result, n.criteria, n.owner_id, n.project_id, n.parent_id, by, n.next_step, n.due_at, n.budget_tokens, now, now],
+            "INSERT INTO obligations(id,title,result,criteria,owner_id,project_id,parent_id,requested_by,next_step,due_at,budget_tokens,created_at,updated_at,dependencies,reviewer_id)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            params![id, n.title.trim(), n.result, n.criteria, n.owner_id, n.project_id, n.parent_id, by, n.next_step, n.due_at, n.budget_tokens, now, now, serde_json::to_string(&n.dependencies).unwrap(), n.reviewer_id],
         )?;
         emit_c(&c, "obligation.created", "obligation", &id, &by, serde_json::json!({"title": n.title, "owner": n.owner_id, "project": n.project_id}))?;
         Ok(c.query_row(&format!("SELECT {OBL_COLS} FROM obligations WHERE id=?"), [&id], obligation_from)?)
@@ -760,6 +764,7 @@ impl Store {
         if cur.state.is_terminal() {
             return Err(Error::Transition("завершённую задачу нельзя передать".into()));
         }
+        if cur.reviewer_id.as_deref() == Some(new_owner) { return Err(Error::invalid("исполнитель не может проверять собственный результат")); }
         c.execute("UPDATE obligations SET owner_id=?, updated_at=? WHERE id=?", params![new_owner, now_ms(), id])?;
         emit_c(&c, "obligation.reassigned", "obligation", id, actor, serde_json::json!({"from": cur.owner_id, "to": new_owner}))?;
         Ok(c.query_row(&format!("SELECT {OBL_COLS} FROM obligations WHERE id=?"), [id], obligation_from)?)
@@ -767,33 +772,43 @@ impl Store {
 
     pub(crate) fn write_obligation_state(
         &self,
-        id: &str,
+        expected: &Obligation,
         state: ObligationState,
         wait: Option<&WaitCondition>,
         blocker: &str,
         outcome: Option<&str>,
         next_step: Option<&str>,
+        evidence: Option<&str>,
+        dependencies: Option<&[String]>,
         actor: &str,
         note: &str,
     ) -> Result<Obligation> {
         let c = self.lock();
-        let prev: String = c
-            .query_row("SELECT state FROM obligations WHERE id=?", [id], |r| r.get(0))
-            .optional()?
-            .ok_or_else(|| Error::not_found(format!("задачо {id}")))?;
+        let id = &expected.id;
+        let current = c.query_row(&format!("SELECT {OBL_COLS} FROM obligations WHERE id=?"), [id], obligation_from)?;
+        if current.state != expected.state || current.updated_at != expected.updated_at || current.owner_id != expected.owner_id || current.reviewer_id != expected.reviewer_id || current.dependencies != expected.dependencies {
+            return Err(Error::invalid("задача изменилась: перечитайте её перед изменением состояния"));
+        }
+        if let Some(deps) = dependencies {
+            validate_teamwork(&c, id, current.project_id.as_deref(), current.owner_id.as_deref(), deps, current.reviewer_id.as_deref())?;
+        }
+        let tx = c.unchecked_transaction()?;
+        let prev = current.state.as_str();
+        if let Some(evidence) = evidence { tx.execute("UPDATE obligations SET evidence=? WHERE id=?", params![evidence,id])?; }
+        if let Some(deps) = dependencies { tx.execute("UPDATE obligations SET dependencies=? WHERE id=?", params![serde_json::to_string(deps).unwrap(),id])?; }
         let wait_json = wait.map(|w| serde_json::to_string(w).unwrap_or_default());
-        c.execute(
+        tx.execute(
             "UPDATE obligations SET state=?, wait_condition=?, blocker=?, updated_at=? WHERE id=?",
             params![state.as_str(), wait_json, blocker, now_ms(), id],
         )?;
         if let Some(o) = outcome {
-            c.execute("UPDATE obligations SET outcome=? WHERE id=?", params![o, id])?;
+            tx.execute("UPDATE obligations SET outcome=? WHERE id=?", params![o, id])?;
         }
         if let Some(n) = next_step {
-            c.execute("UPDATE obligations SET next_step=? WHERE id=?", params![n, id])?;
+            tx.execute("UPDATE obligations SET next_step=? WHERE id=?", params![n, id])?;
         }
         emit_c(
-            &c,
+            &tx,
             &format!("obligation.{}", state.as_str()),
             "obligation",
             id,
@@ -801,9 +816,10 @@ impl Store {
             {
                 // a blocked task always says why in the history, even when the caller left the note empty
                 let note = if note.trim().is_empty() && !blocker.trim().is_empty() { blocker } else { note };
-                serde_json::json!({"from": prev, "to": state.as_str(), "note": note, "blocker": blocker})
+                serde_json::json!({"from": prev, "to": state.as_str(), "note": note, "blocker": blocker, "evidence": evidence, "outcome": outcome})
             },
         )?;
+        tx.commit()?;
         Ok(c.query_row(&format!("SELECT {OBL_COLS} FROM obligations WHERE id=?"), [id], obligation_from)?)
     }
 
@@ -919,13 +935,14 @@ impl Store {
 
     /// Forget the CLI session a specialist continues in this chat: the next turn starts a fresh one.
     pub fn clear_cli_session_for(&self, thread_id: &str, provider: &str, agent_id: &str) -> Result<()> {
-        let t = self.get_thread(thread_id)?;
-        let mut m = t.cli_sessions.as_object().cloned().unwrap_or_default();
-        m.remove(&format!("{provider}:{agent_id}"));
-        if t.agent_id.as_deref() == Some(agent_id) {
-            m.remove(provider);
+        let c = self.lock();
+        let (raw,pinned): (String,Option<String>) = c.query_row("SELECT cli_sessions,agent_id FROM threads WHERE id=?",[thread_id],|r|Ok((r.get(0)?,r.get(1)?)))?;
+        let mut sessions: serde_json::Value = json_or(&raw,serde_json::json!({}));
+        if let Some(m) = sessions.as_object_mut() {
+            m.remove(&format!("{provider}:{agent_id}"));
+            if pinned.as_deref() == Some(agent_id) { m.remove(provider); }
         }
-        self.lock().execute("UPDATE threads SET cli_sessions=? WHERE id=?", params![serde_json::Value::Object(m).to_string(), thread_id])?;
+        c.execute("UPDATE threads SET cli_sessions=? WHERE id=?", params![sessions.to_string(), thread_id])?;
         Ok(())
     }
 
@@ -936,10 +953,14 @@ impl Store {
 
     /// Keep a specialist's summary of this chat (replacing the one before it).
     pub fn set_compact_summary(&self, thread_id: &str, agent_id: &str, summary: &str, messages: usize) -> Result<()> {
-        let t = self.get_thread(thread_id)?;
-        let mut all = t.meta.get("compact").and_then(|v| v.as_object().cloned()).unwrap_or_default();
-        all.insert(agent_id.into(), serde_json::json!({"summary": summary, "at": now_ms(), "messages": messages}));
-        self.set_forum_meta(thread_id, &serde_json::json!({"compact": serde_json::Value::Object(all)}))?;
+        // Hold the lock across read and write: participants may compact concurrently.
+        let c = self.lock();
+        let raw: String = c.query_row("SELECT meta FROM threads WHERE id=?",[thread_id],|r|r.get(0))?;
+        let mut meta: serde_json::Value = json_or(&raw,serde_json::json!({}));
+        let now = now_ms();
+        if !meta["compact"].is_object() { meta["compact"] = serde_json::json!({}); }
+        meta["compact"][agent_id] = serde_json::json!({"summary": summary,"at":now,"messages":messages});
+        c.execute("UPDATE threads SET meta=?,updated_at=? WHERE id=?",params![meta.to_string(),now,thread_id])?;
         Ok(())
     }
 
@@ -948,10 +969,11 @@ impl Store {
     }
 
     pub fn set_thread_cli_session(&self, id: &str, backend: &str, session: &str) -> Result<()> {
-        let t = self.get_thread(id)?;
-        let mut m = t.cli_sessions.as_object().cloned().unwrap_or_default();
-        m.insert(backend.into(), serde_json::Value::String(session.into()));
-        self.lock().execute("UPDATE threads SET cli_sessions=? WHERE id=?", params![serde_json::Value::Object(m).to_string(), id])?;
+        let c = self.lock();
+        let raw: String = c.query_row("SELECT cli_sessions FROM threads WHERE id=?",[id],|r|r.get(0))?;
+        let mut sessions: serde_json::Value = json_or(&raw,serde_json::json!({}));
+        sessions[backend] = serde_json::Value::String(session.into());
+        c.execute("UPDATE threads SET cli_sessions=? WHERE id=?", params![sessions.to_string(),id])?;
         Ok(())
     }
 
@@ -988,15 +1010,32 @@ impl Store {
             .ok_or_else(|| Error::not_found(format!("сообщение {id}")))
     }
 
+    /// Caller serializes sends. None means new, null means an interrupted send whose result needs checking.
+    pub fn begin_chat_request(&self, thread: &str, id: &str, payload: &str) -> Result<Option<serde_json::Value>> {
+        let c = self.lock();
+        let old: Option<(String, Option<String>)> = c.query_row(
+            "SELECT payload,response FROM chat_requests WHERE thread_id=? AND request_id=?",
+            params![thread, id], |r| Ok((r.get(0)?, r.get(1)?)),
+        ).optional()?;
+        if let Some((sent, response)) = old {
+            if sent != payload { return Err(Error::invalid("Идентификатор отправки уже использован для другого сообщения")); }
+            return Ok(Some(response.and_then(|r| serde_json::from_str(&r).ok()).unwrap_or(serde_json::Value::Null)));
+        }
+        c.execute("INSERT INTO chat_requests(thread_id,request_id,payload,created_at) VALUES (?,?,?,?)", params![thread, id, payload, now_ms()])?;
+        Ok(None)
+    }
+
+    pub fn finish_chat_request(&self, thread: &str, id: &str, response: &serde_json::Value) -> Result<()> {
+        self.lock().execute("UPDATE chat_requests SET response=? WHERE thread_id=? AND request_id=?", params![response.to_string(), thread, id])?;
+        Ok(())
+    }
+
     /// Streaming update of an agent message. `props_merge` is shallow-merged into existing props
     /// (a null value removes the key).
     pub fn update_message(&self, id: &str, body: Option<&str>, props_merge: Option<&serde_json::Value>, status: Option<MessageStatus>) -> Result<Message> {
         let c = self.lock();
         let now = now_ms();
-        if let Some(b) = body {
-            c.execute("UPDATE messages SET body=?, updated_at=? WHERE id=?", params![b, now, id])?;
-        }
-        if let Some(patch) = props_merge {
+        let props = if let Some(patch) = props_merge {
             let cur: String = c
                 .query_row("SELECT props FROM messages WHERE id=?", [id], |r| r.get(0))
                 .optional()?
@@ -1011,10 +1050,16 @@ impl Store {
                     }
                 }
             }
-            c.execute("UPDATE messages SET props=?, updated_at=? WHERE id=?", params![v.to_string(), now, id])?;
-        }
-        if let Some(st) = status {
-            c.execute("UPDATE messages SET status=?, updated_at=? WHERE id=?", params![st.as_str(), now, id])?;
+            Some(v.to_string())
+        } else {
+            None
+        };
+        // One atomic write / WAL commit per streaming frame, rather than up to three.
+        if body.is_some() || props.is_some() || status.is_some() {
+            c.execute(
+                "UPDATE messages SET body=COALESCE(?1,body), props=COALESCE(?2,props), status=COALESCE(?3,status), updated_at=?4 WHERE id=?5",
+                params![body, props, status.map(|s| s.as_str()), now, id],
+            )?;
         }
         Ok(c.query_row(&format!("SELECT {MESSAGE_COLS} FROM messages WHERE id=?"), [id], message_from)?)
     }
@@ -1036,7 +1081,7 @@ impl Store {
         let mut st = c.prepare(&format!(
             "SELECT {MESSAGE_COLS} FROM (
                SELECT * FROM messages WHERE thread_id=?1
-                 AND (?2 IS NULL OR created_at < (SELECT created_at FROM messages WHERE id=?2))
+                 AND (?2 IS NULL OR (created_at,id) < (SELECT created_at,id FROM messages WHERE id=?2 AND thread_id=?1))
                ORDER BY created_at DESC, id DESC LIMIT ?3
              ) AS messages ORDER BY created_at, id"
         ))?;
@@ -1703,7 +1748,7 @@ impl Store {
     pub fn take_notes(&self, agent_id: &str) -> Result<Vec<serde_json::Value>> {
         let c = self.lock();
         let mut st = c.prepare(
-            "SELECT n.id, CASE WHEN n.from_agent=n.to_agent THEN 'Владелец' ELSE coalesce(a.name, 'Владелец') END, CASE WHEN n.from_agent=n.to_agent THEN 'person' ELSE coalesce(a.slug, 'person') END, n.text, n.urgent, n.created_at FROM agent_notes n LEFT JOIN agents a ON a.id=n.from_agent WHERE n.to_agent=? AND n.delivered_at IS NULL ORDER BY n.created_at",
+            "SELECT n.id, CASE WHEN n.from_agent=n.to_agent THEN 'Владелец' ELSE coalesce(a.name, 'Владелец') END, CASE WHEN n.from_agent=n.to_agent THEN 'person' ELSE coalesce(a.slug, 'person') END, n.text, n.urgent, n.created_at FROM agent_notes n LEFT JOIN agents a ON a.id=n.from_agent WHERE n.to_agent=? AND (n.delivered_at IS NULL OR (n.urgent=1 AND n.acknowledged_at IS NULL)) ORDER BY n.urgent DESC,n.created_at",
         )?;
         let notes = st
             .query_map([agent_id], |r| {
@@ -1743,10 +1788,10 @@ impl Store {
     /// What became of the notes this agent sent lately: read or still waiting.
     pub fn sent_notes(&self, agent_id: &str, limit: i64) -> Result<Vec<serde_json::Value>> {
         let c = self.lock();
-        let mut st = c.prepare("SELECT n.id, a.slug, substr(n.text,1,120), n.created_at, n.delivered_at FROM agent_notes n JOIN agents a ON a.id=n.to_agent WHERE n.from_agent=? ORDER BY n.created_at DESC LIMIT ?")?;
+        let mut st = c.prepare("SELECT n.id, a.slug, substr(n.text,1,120), n.created_at, n.delivered_at,n.acknowledged_at FROM agent_notes n JOIN agents a ON a.id=n.to_agent WHERE n.from_agent=? ORDER BY n.created_at DESC LIMIT ?")?;
         let v = st
             .query_map(params![agent_id, limit], |r| {
-                Ok(serde_json::json!({"id": r.get::<_, String>(0)?, "to": r.get::<_, String>(1)?, "text": r.get::<_, String>(2)?, "at": r.get::<_, i64>(3)?, "read_at": r.get::<_, Option<i64>>(4)?}))
+                Ok(serde_json::json!({"id": r.get::<_, String>(0)?, "to": r.get::<_, String>(1)?, "text": r.get::<_, String>(2)?, "at": r.get::<_, i64>(3)?, "read_at": r.get::<_, Option<i64>>(4)?, "acknowledged_at": r.get::<_, Option<i64>>(5)?}))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(v)
@@ -2401,14 +2446,15 @@ impl Store {
     }
 
     // ---------- artifacts ----------
-    pub fn save_artifact(&self, id: Option<&str>, project_id: Option<&str>, kind: &str, title: &str, body: &str, by: &str) -> Result<Artifact> {
+    pub fn save_artifact(&self, id: Option<&str>, expected_version: Option<i64>, project_id: Option<&str>, kind: &str, title: &str, body: &str, by: &str) -> Result<Artifact> {
         let c = self.lock();
         let now = now_ms();
         let art_id = match id {
             Some(existing) => {
-                let n = c.execute("UPDATE artifacts SET title=?, body=?, version=version+1, updated_at=? WHERE id=?", params![title, body, now, existing])?;
+                let version = expected_version.ok_or_else(|| Error::invalid("для изменения материала укажите expected_version из senate_artifact_read"))?;
+                let n = c.execute("UPDATE artifacts SET title=?, body=?, version=version+1, updated_at=? WHERE id=? AND version=? AND project_id IS ?", params![title, body, now, existing, version, project_id])?;
                 if n == 0 {
-                    return Err(Error::not_found(format!("артефакт {existing}")));
+                    return Err(Error::invalid("материал изменился или недоступен в этом проекте: перечитайте его перед сохранением"));
                 }
                 existing.to_string()
             }
@@ -2523,6 +2569,22 @@ impl Store {
             if !accepts(&s) {
                 continue;
             }
+            if let Some(oid) = &s.obligation_id {
+                let task = c.query_row(&format!("SELECT {OBL_COLS} FROM obligations WHERE id=?"), [oid], obligation_from)?;
+                let valid_state = matches!(task.state, ObligationState::Accepted | ObligationState::Running) && task.owner_id.as_deref()==Some(&s.agent_id)
+                    || task.state==ObligationState::Review && task.reviewer_id.as_deref()==Some(&s.agent_id);
+                let mut ready = true;
+                for dep in &task.dependencies {
+                    let done: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM obligations WHERE id=? AND state='done')", [dep], |r|r.get(0))?;
+                    ready &= done;
+                }
+                if !valid_state || !ready {
+                    c.execute("UPDATE sessions SET status='cancelled',ended_at=? WHERE id=?",params![now_ms(),s.id])?;
+                    if let Some(mid) = &s.message_id { c.execute("UPDATE messages SET status='cancelled',props=json_set(props,'$.phase',NULL,'$.error','условия задачи изменились до запуска') WHERE id=?",[mid])?; }
+                    emit_c(&c,"session.cancelled","session",&s.id,"system",serde_json::json!({"reason":"task changed before claim"}))?;
+                    continue;
+                }
+            }
             // One run at a time per specialist in a chat: they share one CLI session (resume), and
             // a second message to the same person waits its turn. Different specialists, and other
             // chats, run in parallel. `queued` is ordered by creation, so the wait is first-in first-out.
@@ -2536,9 +2598,37 @@ impl Store {
                     continue;
                 }
             }
+            // A summary must run before the next queued ordinary turn of this participant.
+            // The user's messages stay queued, in their original order.
+            if let Some(tid) = &s.thread_id {
+                let compact: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM messages WHERE id=? AND json_extract(props,'$.compact')=1)",[s.message_id.as_deref().unwrap_or("")],|r|r.get(0))?;
+                if !compact {
+                    let pending: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM sessions q JOIN messages m ON m.id=q.message_id WHERE q.thread_id=? AND q.agent_id=? AND q.status='queued' AND json_extract(m.props,'$.compact')=1)",params![tid,s.agent_id],|r|r.get(0))?;
+                    if pending { continue; }
+                }
+            }
+            // Sessions sharing a folder cannot safely edit it at the same time. This is decided
+            // under the same mutex as the claim, on the hub, including remote runners.
+            let workspace = session_workspace(&c, &s)?;
+            if let Some((machine, root)) = &workspace {
+                let mut running = c.prepare(&format!("SELECT {SESSION_COLS} FROM sessions WHERE status='running'"))?;
+                let active = running.query_map([], session_from)?.collect::<rusqlite::Result<Vec<_>>>()?;
+                let mut occupied = false;
+                for other in active {
+                    if let Some((other_machine, other_root)) = session_workspace(&c, &other)? {
+                        if *machine == other_machine && overlapping_roots(root, &other_root) { occupied = true; break; }
+                    }
+                }
+                if occupied {
+                    if let Some(mid) = &s.message_id {
+                        c.execute("UPDATE messages SET props=json_set(props,'$.phase','ждёт освобождения общей папки') WHERE id=?", [mid])?;
+                    }
+                    continue;
+                }
+            }
             let n = c.execute(
-                "UPDATE sessions SET status='running', node_id=?, started_at=? WHERE id=? AND status='queued'",
-                params![node_id, now_ms(), s.id],
+                "UPDATE sessions SET status='running', node_id=?, started_at=?, workspace_machine=?, workspace_root=? WHERE id=? AND status='queued'",
+                params![node_id, now_ms(), workspace.as_ref().map(|w| &w.0), workspace.as_ref().map(|w| &w.1), s.id],
             )?;
             if n == 1 {
                 emit_c(&c, "session.started", "session", &s.id, node_id, serde_json::json!({"agent": s.agent_id}))?;
@@ -2776,4 +2866,104 @@ fn node_from(r: &Row) -> rusqlite::Result<Node> {
         last_seen: r.get(5)?,
         created_at: r.get(6)?,
     })
+}
+
+
+fn validate_teamwork(c: &rusqlite::Connection, id: &str, project: Option<&str>, owner: Option<&str>, dependencies: &[String], reviewer: Option<&str>) -> Result<()> {
+    if let Some(reviewer) = reviewer {
+        if Some(reviewer) == owner { return Err(Error::invalid("проверяющий должен отличаться от исполнителя")); }
+        let active: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM agents WHERE id=? AND status='active')", [reviewer], |r| r.get(0))?;
+        if !active { return Err(Error::invalid("проверяющий недоступен")); }
+    }
+    let mut stack = dependencies.to_vec();
+    let mut seen = std::collections::HashSet::new();
+    while let Some(dep) = stack.pop() {
+        if dep == id { return Err(Error::invalid("круговая зависимость между задачами")); }
+        if !seen.insert(dep.clone()) { continue; }
+        let o = c.query_row(&format!("SELECT {OBL_COLS} FROM obligations WHERE id=?"), [&dep], obligation_from)
+            .optional()?.ok_or_else(|| Error::invalid(format!("нет задачи-зависимости {dep}")))?;
+        if o.project_id.as_deref() != project { return Err(Error::invalid("зависимости должны принадлежать одному проекту")); }
+        stack.extend(o.dependencies);
+    }
+    Ok(())
+}
+
+impl Store {
+    pub fn configure_teamwork(&self, id: &str, dependencies: &[String], reviewer: Option<&str>, actor: &str) -> Result<Obligation> {
+        let c = self.lock();
+        let o = c.query_row(&format!("SELECT {OBL_COLS} FROM obligations WHERE id=?"), [id], obligation_from)?;
+        if o.state.is_terminal() || matches!(o.state, ObligationState::Running | ObligationState::Review) {
+            return Err(Error::invalid("изменять зависимости и проверяющего можно до начала работы или после возврата"));
+        }
+        validate_teamwork(&c, id, o.project_id.as_deref(), o.owner_id.as_deref(), dependencies, reviewer)?;
+        let dependencies: std::collections::BTreeSet<_> = dependencies.iter().collect();
+        c.execute("UPDATE obligations SET dependencies=?, reviewer_id=?, updated_at=? WHERE id=?", params![serde_json::to_string(&dependencies).unwrap(), reviewer, now_ms(), id])?;
+        if o.state == ObligationState::Waiting && matches!(o.wait_condition, Some(WaitCondition::Obligation { .. } | WaitCondition::Obligations { .. })) {
+            let wait = serde_json::to_string(&WaitCondition::Obligations { ids: dependencies.iter().map(|id| (*id).clone()).collect() }).unwrap();
+            c.execute("UPDATE obligations SET wait_condition=? WHERE id=?", params![wait, id])?;
+        }
+        emit_c(&c, "obligation.teamwork", "obligation", id, actor, serde_json::json!({"dependencies": dependencies, "reviewer": reviewer}))?;
+        Ok(c.query_row(&format!("SELECT {OBL_COLS} FROM obligations WHERE id=?"), [id], obligation_from)?)
+    }
+
+
+}
+
+impl Store {
+    pub fn read_artifact(&self, id: &str, project_id: Option<&str>) -> Result<Artifact> {
+        Ok(self.lock().query_row("SELECT id,project_id,kind,title,body,version,created_by,created_at,updated_at FROM artifacts WHERE id=? AND project_id IS ?", params![id, project_id], artifact_from)?)
+    }
+}
+
+
+fn session_workspace(c: &rusqlite::Connection, s: &Session) -> Result<Option<(String, String)>> {
+    if s.status == SessionStatus::Running {
+        let saved: Option<(String,String)> = c.query_row("SELECT workspace_machine,workspace_root FROM sessions WHERE id=? AND workspace_root IS NOT NULL", [&s.id], |r|Ok((r.get(0)?,r.get(1)?))).optional()?;
+        if saved.is_some() { return Ok(saved); }
+    }
+    let pair: Option<(Option<String>, String)> = c.query_row(
+        "SELECT p.node_id,p.root_path FROM projects p WHERE p.id=coalesce((SELECT project_id FROM threads WHERE id=?),(SELECT project_id FROM obligations WHERE id=?)) AND p.root_path<>''",
+        params![s.thread_id,s.obligation_id], |r| Ok((r.get(0)?,r.get(1)?))
+    ).optional()?;
+    Ok(pair.map(|(machine, root)| {
+        let local = machine.as_deref().unwrap_or("").is_empty();
+        let root = if local { std::fs::canonicalize(&root).ok().map(|p| p.to_string_lossy().into_owned()).unwrap_or(root) } else { root };
+        let windows = root.contains('\\') || root.as_bytes().get(1)==Some(&b':');
+        let root = root.replace('\\', "/").trim_end_matches('/').to_string();
+        (machine.unwrap_or_default(), if windows { root.to_lowercase() } else { root })
+    }))
+}
+fn overlapping_roots(a: &str, b: &str) -> bool {
+    a==b || a.starts_with(&format!("{b}/")) || b.starts_with(&format!("{a}/"))
+}
+
+impl Store {
+    pub fn acknowledge_note(&self, id: &str, agent_id: &str) -> Result<()> {
+        let c = self.lock();
+        let n = c.execute("UPDATE agent_notes SET delivered_at=coalesce(delivered_at,?),acknowledged_at=coalesce(acknowledged_at,?) WHERE id=? AND to_agent=?", params![now_ms(),now_ms(),id,agent_id])?;
+        if n == 0 { return Err(Error::invalid("записка недоступна этому получателю")); }
+        Ok(())
+    }
+}
+
+impl Store {
+    pub fn record_review_problem(&self, id: &str, problem: &str) -> Result<()> {
+        let c = self.lock();
+        // Keep the review generation unchanged so a failed review cannot start an endless loop.
+        c.execute("UPDATE obligations SET blocker=? WHERE id=? AND state='review'", params![problem,id])?;
+        emit_c(&c,"obligation.review_problem","obligation",id,"system",serde_json::json!({"note":problem}))?;
+        Ok(())
+    }
+}
+
+impl Store {
+    pub fn session_workplace(&self, session: &Session) -> Result<serde_json::Value> {
+        let c = self.lock();
+        let project: Option<String> = c.query_row("SELECT coalesce((SELECT project_id FROM threads WHERE id=?),(SELECT project_id FROM obligations WHERE id=?))",params![session.thread_id,session.obligation_id],|r|r.get(0))?;
+        let place = session_workspace(&c,session)?;
+        Ok(match place {
+            Some((machine,path)) => serde_json::json!({"project_id":project,"machine":machine,"path":path,"captured":session.status==SessionStatus::Running}),
+            None => serde_json::json!({"project_id":project,"path":null,"machine":null,"captured":false}),
+        })
+    }
 }

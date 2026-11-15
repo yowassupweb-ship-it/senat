@@ -4,10 +4,14 @@
   import ChangesPanel from './ChangesPanel.svelte';
   import FilesPanel from './FilesPanel.svelte';
   import Icon from './Icon.svelte';
+  import ChatWorkspace from './ChatWorkspace.svelte';
   import Splitter from './Splitter.svelte';
 
   let { threadId, projectId = '' }: { threadId: string; projectId?: string } = $props();
 
+  let settings = $state(false);
+  const workers = $derived(app.live.filter(r => r.workspace?.project_id && r.workspace.project_id === projectId || r.thread_id === threadId));
+  const machineName = (id?: string | null) => id ? app.machines.find(m => m.id === id)?.name ?? id : 'Нода Senate';
   const project = $derived(projectById(projectId));
   const hasFolder = $derived(!!project?.root_path);
   const machine = $derived(machineOf(project));
@@ -48,11 +52,23 @@
     <button class="icon-btn" onclick={refresh} aria-label="Обновить" title="Обновить"><Icon name="refresh" size={14} /></button>
     <button class="icon-btn" onclick={() => (app.panel = false)} aria-label="Закрыть панель" title="Закрыть панель"><Icon name="x" size={14} /></button>
   </header>
+  <button class="btn sm" onclick={() => settings = !settings}>Папка и компьютер</button>
+  {#if settings}<ChatWorkspace {threadId} {projectId} onclose={() => settings = false} />{/if}
+  {#if workers.length}
+    <section class="workers" aria-label="Кто работает в проекте">
+      {#each workers as run (run.session_id)}
+        <div class="worker"><b>{app.agents.find(a => a.id === run.agent_id)?.name ?? 'Участник'}</b> · {run.status === 'queued' ? 'в очереди' : run.awaiting ? 'ждёт ответа' : 'работает'}
+          <div class="faint">{run.hint || run.phase}</div>
+          <div class="faint">{run.workspace?.path ? `${machineName(run.workspace.machine)} · ${run.workspace.path}` : 'Рабочая папка уточняется при запуске'}</div>
+        </div>
+      {/each}
+    </section>
+  {/if}
   {#if hasFolder}
     <div class="where" title={project?.root_path}>
       <span class="dot" class:on={!machine || machine.online} aria-hidden="true"></span>
       <Icon name={machine ? 'monitor' : 'server'} size={12} />
-      <span class="mname">{machine ? machine.name : 'Сервер'}</span>
+      <span class="mname">{machine ? machine.name : 'Нода Senate'}</span>
       {#if machine && !machine.online}<span class="off">не в сети</span>{/if}
       <span class="root">{project?.root_path}</span>
     </div>
@@ -65,13 +81,15 @@
     </div>
   {/if}
   {#if tab === 'files'}
-    <FilesPanel bind:this={files} base={filesBase} {threadId} onplace={(p) => (place = p)} />
+    {#key `${filesBase}:${project?.root_path}:${project?.node_id}`}<FilesPanel bind:this={files} base={filesBase} {threadId} onplace={(p) => (place = p)} />{/key}
   {:else}
     <ChangesPanel {threadId} bare />
   {/if}
 </aside>
 
 <style>
+  .workers { padding: 0.75rem; border-bottom: 1px solid var(--line); max-height: 25vh; overflow: auto; }
+  .worker { font-size: 0.75rem; overflow-wrap: anywhere; padding-block: 0.25rem; }
   .panel {
     width: var(--panel-w, 400px);
     position: relative;

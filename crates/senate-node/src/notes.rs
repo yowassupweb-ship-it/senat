@@ -23,6 +23,9 @@ pub(crate) fn block(notes: &[Value]) -> String {
     for n in notes.iter().filter(|n| seen.insert((n["from_slug"].to_string(), n["text"].to_string()))) {
         s += &format!("- {}{} (@{}): {}\n", if n["urgent"] == true { "СРОЧНО · " } else { "" }, n["from"].as_str().unwrap_or(""), n["from_slug"].as_str().unwrap_or(""), n["text"].as_str().unwrap_or(""));
     }
+    for n in notes.iter().filter(|n| n["urgent"] == true) {
+        s += &format!("Учти срочную записку, затем подтверди senate_acknowledge_note(id=\"{}\").\n", n["id"].as_str().unwrap_or(""));
+    }
     s + "</senate-notes>\n\n"
 }
 
@@ -35,7 +38,7 @@ pub(crate) fn attach(a: &App, ctx: &ToolCtx, result: Value) -> Value {
             let wrapped = if result.is_object() { result } else { json!({"result": result}) };
             let mut w = wrapped;
             w["notes_from_colleagues"] = json!(notes);
-            w["notes_hint"] = json!("Это записки коллег, пришедшие во время твоей работы: прочитай и учти до следующего шага.");
+            w["notes_hint"] = json!("Это записки коллег, пришедшие во время твоей работы: прочитай и учти до следующего шага. Срочные подтверди senate_acknowledge_note по id после того, как учтёшь предупреждение.");
             return w;
         }
     }
@@ -57,10 +60,19 @@ pub(crate) async fn ask_colleague(a: &Arc<App>, ctx: &ToolCtx, args: &Value) -> 
     let question = args["question"].as_str().unwrap_or("").to_string();
     let r = tools::call(&a.store, ctx, "senate_call_colleague", &json!({"to": args["to"], "request": question})).map_err(|e| e.to_string())?;
     let Some(mid) = r["message_id"].as_str().map(String::from) else { return Ok(r) };
+    // A shared folder is serialized: waiting here would occupy the very slot the colleague needs.
+    if let Some(pid) = &ctx.project_id {
+        if a.store.get_project(pid).map(|p| !p.root_path.is_empty()).unwrap_or(false) {
+            let _ = a.store.update_message(&mid, None, Some(&json!({"inline_gave_up": true})), None);
+            a.publish("thread", json!({"id": ctx.thread_id}));
+            a.poke();
+            return Ok(json!({"status": "queued", "reason": "общая папка занята текущей работой", "note": "Коллега запущен в очередь. Заверши текущий ход; его ответ придёт отдельным ходом после освобождения папки."}));
+        }
+    }
     // the colleague's answer comes here while we wait, not as a separate turn
     let _ = a.store.update_message(&mid, None, Some(&json!({"inline_wait": true})), None);
     a.publish("thread", json!({"id": ctx.thread_id}));
-    a.wake.notify_waiters();
+    a.poke();
     let until = Instant::now() + Duration::from_secs(wait);
     loop {
         if let Ok(m) = a.store.get_message(&mid) {

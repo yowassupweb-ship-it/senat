@@ -108,6 +108,7 @@ pub struct App {
     /// The node's own load (metrics.rs), and the load each computer reported last.
     pub(crate) node_metrics: Mutex<serde_json::Value>,
     pub(crate) machine_metrics: Mutex<HashMap<String, serde_json::Value>>,
+    pub(crate) chat_send: Mutex<()>,
 }
 
 impl App {
@@ -212,6 +213,8 @@ pub async fn serve(cfg: Config) -> Result<Handle, String> {
         }
     };
 
+    // Warm the cached tool inventory while the node starts, rather than on the first user turn.
+    tokio::task::spawn_blocking(crate::workspace::environment);
     let installed = senate_runtime::discover().await;
     let caps: Vec<serde_json::Value> = vec![serde_json::json!({"backend": "mock", "label": "Демо (без модели)", "version": "1", "ready": true, "models": [{"id": "", "label": "Демо"}]})];
     let host = std::env::var("COMPUTERNAME").or_else(|_| std::env::var("HOSTNAME")).unwrap_or_else(|_| "Этот компьютер".into());
@@ -258,6 +261,7 @@ pub async fn serve(cfg: Config) -> Result<Handle, String> {
         questions: Mutex::new(HashMap::new()),
         node_metrics: Mutex::new(serde_json::Value::Null),
         machine_metrics: Mutex::new(HashMap::new()),
+        chat_send: Mutex::new(()),
     });
     accounts::rebuild_caps(&app);
     // Who is logged in is learned in the background: the window must open at once.

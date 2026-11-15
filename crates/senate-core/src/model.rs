@@ -202,6 +202,8 @@ pub enum WaitCondition {
     Event { kind: String, #[serde(default)] subject: Option<String> },
     /// Resume when another obligation is done.
     Obligation { id: String },
+    /// Resume only after every prerequisite delivers a result.
+    Obligations { ids: Vec<String> },
     /// Resume when the user answers.
     User,
 }
@@ -224,6 +226,11 @@ pub struct Obligation {
     pub due_at: Option<i64>,
     pub budget_tokens: i64,
     pub spent_tokens: i64,
+    #[serde(default)]
+    pub dependencies: Vec<String>,
+    pub reviewer_id: Option<String>,
+    #[serde(default)]
+    pub evidence: String,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -245,6 +252,9 @@ pub struct NewObligation {
     pub due_at: Option<i64>,
     #[serde(default)]
     pub budget_tokens: i64,
+    #[serde(default)]
+    pub dependencies: Vec<String>,
+    pub reviewer_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

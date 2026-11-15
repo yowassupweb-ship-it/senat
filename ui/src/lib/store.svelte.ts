@@ -1,5 +1,6 @@
 import { get, openEvents } from './api';
 import { readLink } from './link';
+import { coalescedRefresh } from './refresh';
 import type { Account, Agent, Attention, Backend, Company, GitStatus, LiveRun, Machine, Message, Project, Thread } from './types';
 
 export type View =
@@ -144,54 +145,35 @@ export async function loadMachines() {
 /** The computer a project's folder is on (null: on the node itself). */
 export const machineOf = (p?: Project | null) => (p?.node_id ? app.machines.find((m) => m.id === p.node_id) ?? { id: p.node_id, name: 'Компьютер', os: '', online: false, env: null, last_seen: null } : null);
 
-let tLive: ReturnType<typeof setTimeout> | undefined;
 /** Re-read who is working. Events come in dozens per second while someone writes: at most one read per 600 ms, replaced only on change. */
-export function refreshLive(now = false) {
-  clearTimeout(tLive);
-  tLive = setTimeout(async () => {
-    try {
+export const refreshLive = coalescedRefresh(async () => {
       const next: LiveRun[] = await get('/api/live');
-      const sig = (l: LiveRun[]) => JSON.stringify(l.map((r) => [r.session_id, r.status, r.phase, r.hint, r.awaiting, r.plan]));
+      const sig = (l: LiveRun[]) => JSON.stringify(l);
       if (sig(next) !== sig(app.live)) app.live = next;
-    } catch {
-      /* offline: keep what is shown */
-    }
-  }, now ? 0 : 600);
-}
+}, 600);
 
-let tThreads: ReturnType<typeof setTimeout> | undefined;
-let tAgents: ReturnType<typeof setTimeout> | undefined;
-export function refreshAgents() {
-  clearTimeout(tAgents);
-  tAgents = setTimeout(() => {
-    get('/api/agents').then((a) => (app.agents = a)).catch(() => {});
-  }, 1500);
-}
+export const refreshAgents = coalescedRefresh(async () => {
+  app.agents = await get('/api/agents');
+}, 1500);
 
-export function refreshThreads() {
-  clearTimeout(tThreads);
-  tThreads = setTimeout(async () => {
-    try {
-      app.threads = await get('/api/threads');
-    } catch {
-      /* offline */
-    }
-  }, 150);
-}
-async function refreshAttention() {
-  try {
+export const refreshThreads = coalescedRefresh(async () => {
+  app.threads = await get('/api/threads');
+}, 150);
+const refreshAttention = coalescedRefresh(async () => {
     app.attention = await get('/api/attention');
-  } catch {
-    /* offline */
-  }
-}
+}, 150);
 
 export async function loadMessages(threadId: string, before?: string) {
-  const r = await get(`/api/threads/${threadId}/messages${before ? `?before=${before}` : ''}`);
+  const r = await get(`/api/threads/${threadId}/messages?limit=30${before ? `&before=${encodeURIComponent(before)}` : ''}`);
   const cur = app.messages[threadId] ?? [];
-  app.messages[threadId] = before ? [...r.messages, ...cur] : r.messages;
-  if (!before) app.hasMore[threadId] = r.has_more;
-  else app.hasMore[threadId] = r.has_more;
+  const merged = new Map(cur.map(m => [m.id, m]));
+  for (const m of r.messages as Message[]) {
+    const existing = merged.get(m.id);
+    if (!existing || m.updated_at >= existing.updated_at) merged.set(m.id, m);
+  }
+  app.messages[threadId] = [...merged.values()].sort((a, b) => a.created_at - b.created_at);
+  // Refreshing the latest page must not reset the cursor of older pages already loaded.
+  if (before || !cur.length || app.hasMore[threadId] === undefined) app.hasMore[threadId] = r.has_more;
 }
 
 // While the person has text selected inside a message, updates to that message wait: a specialist streaming
@@ -219,13 +201,14 @@ export function upsertMessage(m: Message) {
   const list = app.messages[m.thread_id];
   if (!list) return;
   const i = list.findIndex((x) => x.id === m.id);
+  if (i >= 0 && list[i].updated_at > m.updated_at) return;
   if (i >= 0 && m.status !== 'done' && m.status !== 'failed' && selectingIn(m.id)) {
     held.set(m.id, m);
     return;
   }
   held.delete(m.id);
   // a finished answer may move to the end of the chat (the node gives it its finishing time): keep the order
-  if (i >= 0 && list[i].created_at === m.created_at) list[i] = m;
+  if (i >= 0 && list[i].created_at === m.created_at) Object.assign(list[i], m);
   else {
     if (i >= 0) list.splice(i, 1);
     let at = list.length;
@@ -262,20 +245,12 @@ export function onEvent(fn: (type: string, data: any) => void) {
 // many events in a row (a council of several colleagues) cost one fetch of the chat
 const syncTimers = new Map<string, ReturnType<typeof setTimeout>>();
 function syncThread(id: string) {
-  clearTimeout(syncTimers.get(id));
+  if (syncTimers.has(id)) return;
   syncTimers.set(
     id,
     setTimeout(() => {
       syncTimers.delete(id);
-      get(`/api/threads/${id}/messages`)
-        .then((r: { messages: Message[] }) => {
-          // the fresh page replaces its own messages; older pages already loaded stay
-          const fresh = new Map(r.messages.map((m) => [m.id, m]));
-          const first = r.messages[0]?.created_at ?? Infinity;
-          const older = (app.messages[id] ?? []).filter((m) => !fresh.has(m.id) && m.created_at < first);
-          app.messages[id] = [...older, ...r.messages];
-        })
-        .catch(() => {});
+      loadMessages(id).catch(() => {});
     }, 400),
   );
 }
@@ -287,12 +262,14 @@ export function startEvents() {
       if (type === 'message') {
         const m = data as Message;
         const known = app.messages[m.thread_id];
+        const previous = known?.find((x) => x.id === m.id);
+        const changedStatus = !previous || previous.status !== m.status;
         // a colleague's answer or a council turn whose call was written on the server without an event of its own:
         // fetch the chat, so the answer lands under its call and not on its own
         const p = (m.props ?? {}) as any;
         if (known && !known.some((x) => x.id === m.id) && (p.asked_by || p.reply_from || p.council || p.council_reply)) syncThread(m.thread_id);
         upsertMessage(m);
-        refreshThreads();
+        if (changedStatus) refreshThreads();
         if (data.status === 'done' || data.status === 'failed') {
           refreshAgents(); // finished work changes level and open tasks
           const t = threadById(data.thread_id);

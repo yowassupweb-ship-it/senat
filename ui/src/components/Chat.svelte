@@ -1,4 +1,6 @@
 <script lang="ts">
+  import ContextBar from './ContextBar.svelte';
+  import ChatWorkspace from './ChatWorkspace.svelte';
   import Spinner from './Spinner.svelte';
   import { tick, untrack } from 'svelte';
   import { fileUrl, get, patch, post } from '../lib/api';
@@ -13,6 +15,9 @@
   import Icon from './Icon.svelte';
   import MessageView from './Message.svelte';
   import UsageRings from './UsageRings.svelte';
+  import Outbox from './Outbox.svelte';
+  import { enqueue, initOutbox } from '../lib/outbox.svelte';
+  import type { Uploaded } from '../lib/api';
 
   let { threadId, projectId }: { threadId?: string; projectId?: string } = $props();
 
@@ -117,6 +122,25 @@
     await post(`/api/forums/${threadId}/${what}`).catch((e) => (error = e.message));
   }
   let error = $state('');
+  let workspaceOpen = $state(false);
+  const draftGroup = `new-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  $effect(() => { app.nodeId; untrack(initOutbox); });
+  let loadingOlder = $state(false);
+  async function loadOlder() {
+    if (!threadId || loadingOlder || !scroller) return;
+    const id = threadId;
+    const el = scroller;
+    const height = el.scrollHeight;
+    const top = el.scrollTop;
+    loadingOlder = true;
+    stick = false;
+    try {
+      await loadMessages(id, messages[0]?.id);
+      await tick();
+      if (threadId === id) el.scrollTop = top + el.scrollHeight - height;
+    } catch (e: any) { error = e.message; }
+    finally { loadingOlder = false; }
+  }
 
   // Settings of a chat that does not exist yet live here; for existing chats they come from the thread.
   let draftSettings = $state<Settings>({ agent: '', mode: '', effort: '' });
@@ -225,33 +249,18 @@
     }
   }
 
-  async function send(text: string, attachments: { id?: string }[] = []) {
+  function send(text: string, attachments: Uploaded[] = []) {
     error = '';
     try {
-      let id = threadId;
       if (picked.length > 1) {
         const tags = picked.map((p) => app.agents.find((a) => a.id === p)?.slug).filter((s): s is string => !!s && !text.includes('@' + s));
         if (tags.length) text = tags.map((s) => '@' + s).join(' ') + ' ' + text;
       }
-      if (!id) {
-        const t = await post('/api/threads', { project_id: projectId ?? null, agent_id: draftSettings.agent || null });
-        id = t.id as string;
-        app.messages[id] = [];
-        app.threads.unshift({ ...t, last_text: '', working: true });
-      }
-      const d = await post(`/api/threads/${id}/messages`, {
-        text,
-        // files go by id only: the node knows where it stored them
-        attachments: attachments.filter((a) => a.id).map((a) => ({ id: a.id })),
-        mode: settings.mode || undefined,
-        effort: settings.effort || undefined,
+      enqueue({ group: threadId ?? draftGroup, threadId, projectId, agentId: draftSettings.agent || undefined, text, attachments,
+        mode: settings.mode || undefined, effort: settings.effort || undefined }, id => {
+        if (!threadId && app.view.kind === 'new' && app.view.project === projectId) go({ kind: 'chat', id });
       });
-      upsertMessage(d.user_message);
-      d.agent_messages.forEach(upsertMessage);
-      if (!threadId) {
-        // carry a pre-chat choice into the chat
-        go({ kind: 'chat', id });
-      } else stick = true;
+      stick = true;
     } catch (e: any) {
       error = e.message;
       return false;
@@ -452,6 +461,7 @@
         {#if thread.kind !== 'lounge'}<button class="icon-btn" onclick={archive} aria-label="В архив" title="В архив"><Icon name="archive" size={15} /></button>{/if}
       {/if}
     </header>
+    {#if threadId && !isForum}{#key threadId}<ContextBar {threadId} />{/key}{/if}
 
     {#if !threadId}
       <div class="empty">
@@ -461,7 +471,7 @@
       <div class="scroll" bind:this={scroller} onscroll={onScroll}>
         <div class="col">
           {#if app.hasMore[threadId]}
-            <button class="older" onclick={() => loadMessages(threadId!, messages[0]?.id)}>Показать раньше</button>
+            <button class="older" disabled={loadingOlder} onclick={loadOlder}>{loadingOlder ? 'Загружается…' : 'Показать раньше'}</button>
           {/if}
           {#if loading}
             <Spinner size={24} fill />
@@ -534,8 +544,10 @@
 
     <!-- the composer floats over the chat: the messages run on under it to the bottom edge -->
     <div class="dock" bind:clientHeight={dockH}>
+    <Outbox {threadId} {projectId} queued={messages.filter(m => m.author_kind === 'agent' && m.status === 'queued')} oncancel={stop}/>
     {#if error}<div class="error" role="alert">{error}<button class="icon-btn" onclick={() => (error = '')} aria-label="Закрыть"><Icon name="x" size={13} /></button></div>{/if}
 
+    {#if workspaceOpen && threadId}<ChatWorkspace {threadId} projectId={thread?.project_id} onclose={() => workspaceOpen = false} />{/if}
     <Composer
       {settings}
       {picked}
@@ -551,6 +563,8 @@
       {threadId}
       git={gitChip}
       ongit={() => (app.panel = !app.panel)}
+      onworkspace={threadId && !isForum ? () => workspaceOpen = !workspaceOpen : undefined}
+      workspace={project?.root_path ? project.name : undefined}
       todos={planTodos}
       paused={!!meta.plan_hold}
       onpause={pausePlan}

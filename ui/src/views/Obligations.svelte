@@ -14,7 +14,7 @@
 
   let all = $state<Obligation[]>([]);
   let creating = $state(false);
-  let draft = $state({ title: '', result: '', criteria: '', owner_id: '', project_id: '' });
+  let draft = $state({ title: '', result: '', criteria: '', owner_id: '', project_id: '', reviewer_id: '', dependencies: [] as string[] });
   let error = $state('');
   let showDone = $state(false);
   // the list of tasks, the calendar of what is planned, and the schedules themselves
@@ -33,8 +33,9 @@
     });
   });
 
-  let detail = $state<{ obligation: Obligation; journal: any[]; sessions: any[]; children: Obligation[]; thread_id: string | null } | null>(null);
+  let detail = $state<{ obligation: Obligation; journal: any[]; sessions: any[]; children: Obligation[]; dependencies: Obligation[]; thread_id: string | null } | null>(null);
   let answer = $state('');
+  let reviewNote = $state('');
   async function loadDetail() {
     if (!id) return (detail = null);
     try {
@@ -51,9 +52,9 @@
 
   async function create() {
     try {
-      const o = await post('/api/obligations', { ...draft, owner_id: draft.owner_id || null, project_id: draft.project_id || null, requested_by: 'user' });
+      const o = await post('/api/obligations', { ...draft, owner_id: draft.owner_id || null, project_id: draft.project_id || null, reviewer_id: draft.reviewer_id || null, requested_by: 'user' });
       creating = false;
-      draft = { title: '', result: '', criteria: '', owner_id: '', project_id: '' };
+      draft = { title: '', result: '', criteria: '', owner_id: '', project_id: '', reviewer_id: '', dependencies: [] as string[] };
       await loadAll();
       go({ kind: 'obligations', id: o.id });
     } catch (e: any) {
@@ -77,6 +78,23 @@
   async function reassign(to: string) {
     await post(`/api/obligations/${id}/reassign`, { to });
     loadDetail();
+  }
+  async function configure(fields: Record<string, unknown>) {
+    try {
+      await patch(`/api/obligations/${id}`, fields);
+      error = '';
+      await Promise.all([loadAll(), loadDetail()]);
+    } catch (e: any) { error = e.message; }
+  }
+  function returnReview(oid?: string) {
+    const note = oid ? prompt('Что нужно доработать?') : reviewNote;
+    if (!note?.trim()) return;
+    if (oid) bulk('accepted', { note: note.trim() }, [oid]);
+    else transition('accepted', { note: note.trim() });
+  }
+  function bulkReturn() {
+    const note = prompt('Что нужно доработать в выбранных результатах?');
+    if (note?.trim()) bulk('accepted', { note: note.trim() });
   }
   async function decideApproval(a: any, approve: boolean) {
     await post(`/api/approvals/${a.id}/decide`, { approve });
@@ -140,7 +158,7 @@
     if (reason?.trim()) bulk('cancelled', { outcome: reason.trim() });
   }
   const ownerName = (o: Obligation) => agentById(o.owner_id)?.name ?? 'без ответственного';
-  const waitText = (w: any) => (!w ? '' : w.type === 'time' ? `до ${dateTime(w.at)}` : w.type === 'user' ? 'ответа пользователя' : w.type === 'obligation' ? 'другой задачи' : `события ${w.kind}`);
+  const waitText = (w: any) => (!w ? '' : w.type === 'time' ? `до ${dateTime(w.at)}` : w.type === 'user' ? 'ответа пользователя' : w.type === 'obligation' ? 'другой задачи' : w.type === 'obligations' ? 'всех входящих результатов' : `события ${w.kind}`);
   const actionLabel: Record<string, string> = {
     'obligation.delegate': 'Поручить коллеге',
     'obligation.create': 'Принять поручение',
@@ -181,7 +199,7 @@
     {#if o.state === 'review'}
       <span class="quick">
         <button class="btn sm" disabled={busy} onclick={() => bulk('done', {}, [o.id])} title="Результат принят, задача закрыта">Принять</button>
-        <button class="btn sm" disabled={busy} onclick={() => bulk('accepted', { note: 'возвращено на доработку' }, [o.id])} title="Вернуть исполнителю на доработку">Вернуть</button>
+        <button class="btn sm" disabled={busy} onclick={() => returnReview(o.id)} title="Вернуть исполнителю на доработку">Вернуть</button>
       </span>
     {/if}
   </li>
@@ -198,8 +216,11 @@
             {:else if o.state === 'review'}<b>Результат ждёт проверки</b><p class="muted">{o.outcome || 'Описание результата не приложено'}</p>
             {:else}<b>Специалист ждёт вашего ответа</b>{/if}
             {#if o.state === 'review'}
+              {#if o.evidence}<p class="muted">Основания: {o.evidence}</p>{/if}
+              {#if o.blocker}<p class="bad">{o.blocker}</p>{/if}
+              <label>Замечания для доработки<textarea class="field" rows="2" bind:value={reviewNote}></textarea></label>
               <div class="row"><button class="btn primary" onclick={() => transition('done')}>Принять</button>
-                <button class="btn" onclick={() => transition('accepted', { note: 'возвращено на доработку' })}>Вернуть в работу</button></div>
+                <button class="btn" disabled={!reviewNote.trim()} onclick={() => returnReview()}>Вернуть в работу</button></div>
             {:else}
               <div class="row"><input class="field" bind:value={answer} placeholder="Ответ, уточнение или решение" onkeydown={(e) => e.key === 'Enter' && answer.trim() && reply()} />
                 <button class="btn primary" disabled={!answer.trim()} onclick={reply}>Продолжить</button></div>
@@ -215,12 +236,21 @@
             {#if o.criteria}<dt>Критерии</dt><dd>{o.criteria}</dd>{/if}
             {#if o.next_step}<dt>Следующий шаг</dt><dd>{o.next_step}</dd>{/if}
             {#if o.outcome}<dt>Итог</dt><dd>{o.outcome}</dd>{/if}
+            {#if o.evidence}<dt>Проверки и источники</dt><dd>{o.evidence}</dd>{/if}
+            <dt>Проверяющий</dt><dd>{agentById(o.reviewer_id)?.name ?? 'Вы'}</dd>
             {#if o.due_at}<dt>Срок</dt><dd>{dateTime(o.due_at)}</dd>{/if}
             <dt>Поставил</dt><dd>{o.requested_by === 'user' ? 'вы' : (agentById(o.requested_by)?.name ?? o.requested_by)}</dd>
             {#if o.spent_tokens}<dt>Расход</dt><dd>{o.spent_tokens} токенов</dd>{/if}
           </dl>
         </div>
 
+        <div class="section">
+          <h2>Зависимости</h2>
+          <ul class="list">
+            {#each detail.dependencies ?? [] as dep (dep.id)}{@render row(dep)}
+            {:else}<li class="empty-note">Можно выполнять независимо от других задач.</li>{/each}
+          </ul>
+        </div>
         {#if detail.children.length}
           <div class="section"><h2>Делегировано</h2><ul class="list">{#each detail.children as c (c.id)}{@render row(c)}{/each}</ul></div>
         {/if}
@@ -243,6 +273,14 @@
             {#if o.state !== 'done' && o.state !== 'cancelled'}
               <label>Ответственный
                 <Dropdown block value={o.owner_id ?? ''} options={app.agents.map((a) => ({ id: a.id, label: a.name }))} label="Ответственный" onpick={(v) => reassign(v)} /></label>
+              {#if ['accepted', 'waiting', 'blocked'].includes(o.state)}
+                <label>Проверяющий<Dropdown block value={o.reviewer_id ?? ''} options={[{ id: '', label: 'Проверю сам' }, ...app.agents.filter((a) => a.id !== o.owner_id).map((a) => ({ id: a.id, label: a.name }))]} label="Проверяющий" onpick={(v) => configure({ reviewer_id: v || null })} /></label>
+                <fieldset class="form"><legend>Сначала нужны результаты</legend>
+                  {#each all.filter((dep) => dep.id !== o.id && dep.project_id === o.project_id && (dep.state !== 'cancelled' || (o.dependencies ?? []).includes(dep.id))) as dep (dep.id)}
+                    <label class="row"><input type="checkbox" checked={(o.dependencies ?? []).includes(dep.id)} onchange={(e) => configure({ dependencies: e.currentTarget.checked ? [...(o.dependencies ?? []), dep.id] : (o.dependencies ?? []).filter((key) => key !== dep.id) })} />{dep.title}</label>
+                  {:else}<p class="muted">Других задач в проекте нет.</p>{/each}
+                </fieldset>
+              {/if}
               {#if o.state === 'blocked'}<button class="btn" onclick={() => transition('accepted', { note: 'повторный запуск' })}>Запустить снова</button>{/if}
               <button class="btn" onclick={() => transition('done', { outcome: prompt('Что получено?') || '' })}>Отметить выполненным</button>
               <button class="btn danger" onclick={cancel}>Отменить</button>
@@ -284,10 +322,16 @@
         <label>Критерии завершения <small>по ним результат будут проверять</small><textarea class="field" rows="2" bind:value={draft.criteria}></textarea></label>
         <div class="row">
           <label style="flex:1">Ответственный
-            <Dropdown block value={draft.owner_id} options={[{ id: '', label: 'Выберите…', disabled: true }, ...app.agents.map((a) => ({ id: a.id, label: a.name }))]} label="Кому" onpick={(v) => (draft.owner_id = v)} /></label>
+            <Dropdown block value={draft.owner_id} options={[{ id: '', label: 'Выберите…', disabled: true }, ...app.agents.map((a) => ({ id: a.id, label: a.name }))]} label="Кому" onpick={(v) => { draft.owner_id = v; if (draft.reviewer_id === v) draft.reviewer_id = ''; }} /></label>
           <label style="flex:1">Проект
-            <Dropdown block value={draft.project_id} options={[{ id: '', label: 'Без проекта' }, ...app.projects.map((p) => ({ id: p.id, label: p.name }))]} label="Проект" onpick={(v) => (draft.project_id = v)} /></label>
+            <Dropdown block value={draft.project_id} options={[{ id: '', label: 'Без проекта' }, ...app.projects.map((p) => ({ id: p.id, label: p.name }))]} label="Проект" onpick={(v) => { draft.project_id = v; draft.dependencies = []; }} /></label>
         </div>
+        <label>Проверяющий<Dropdown block value={draft.reviewer_id} options={[{ id: '', label: 'Проверю сам' }, ...app.agents.filter((a) => a.id !== draft.owner_id).map((a) => ({ id: a.id, label: a.name }))]} label="Проверяющий" onpick={(v) => (draft.reviewer_id = v)} /></label>
+        <fieldset class="form"><legend>Сначала нужны результаты</legend>
+          {#each all.filter((o) => (o.project_id ?? '') === draft.project_id && o.state !== 'cancelled') as dep (dep.id)}
+            <label class="row"><input type="checkbox" value={dep.id} bind:group={draft.dependencies} />{dep.title}</label>
+          {:else}<p class="muted">Других задач в проекте нет.</p>{/each}
+        </fieldset>
         <div class="row"><button class="btn primary" type="submit" disabled={!draft.owner_id || !draft.title.trim()}>Поручить</button><button class="btn" type="button" onclick={() => (creating = false)}>Отмена</button></div>
         {#if error}<p class="bad">{error}</p>{/if}
       </form>
@@ -321,7 +365,7 @@
             {#if picked.length}
               <span class="grow"></span>
               {#if pickedReview.length}<button class="btn sm primary" disabled={busy} onclick={() => bulk('done')}>Принять{pickedReview.length < picked.length ? ` (${pickedReview.length})` : ''}</button>
-              <button class="btn sm" disabled={busy} onclick={() => bulk('accepted', { note: 'возвращено на доработку' })}>Вернуть в работу</button>{/if}
+              <button class="btn sm" disabled={busy} onclick={() => bulkReturn()}>Вернуть в работу</button>{/if}
               <button class="btn sm danger" disabled={busy} onclick={bulkCancel}>Отменить</button>
             {/if}
           </div>

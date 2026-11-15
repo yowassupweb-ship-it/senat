@@ -97,7 +97,7 @@ fn hide_window(c: &mut Command) {
 pub async fn version(path: &Path) -> Option<String> {
     let out = tokio::time::timeout(
         std::time::Duration::from_secs(8),
-        command(path).arg("--version").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).output(),
+        command(path).arg("--version").kill_on_drop(true).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).output(),
     )
     .await
     .ok()?

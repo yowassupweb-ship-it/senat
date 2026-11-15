@@ -38,6 +38,8 @@
     threadId,
     git,
     ongit,
+    onworkspace,
+    workspace,
     todos = [],
     paused = false,
     onpause,
@@ -62,6 +64,8 @@
     /** Branch and number of changes of the project folder; the chip toggles the changes panel. */
     git?: { label: string; count: number; active: boolean; title?: string };
     ongit?: () => void;
+    onworkspace?: () => void;
+    workspace?: string;
     /** The specialist's current plan (their TodoWrite list): intermediate tasks of this run. */
     todos?: Todo[];
     /** The person stopped the work because they disagree with the plan. */
@@ -90,7 +94,7 @@
   }
   const doneCount = $derived(todos.filter((t) => t.status === 'completed').length);
   const current = $derived(todos.find((t) => t.status === 'in_progress'));
-  const hasStrip = $derived(!!preview || !!git || todos.length > 0);
+  const hasStrip = $derived(!!preview || !!git || !!onworkspace || todos.length > 0);
   $effect(() => {
     if (!todos.length) tasksOpen = false;
   });
@@ -400,6 +404,7 @@
   <div class="under" bind:this={underEl}>
     {#if hasStrip}
       <div class="strip" role="toolbar" aria-label="Состояние работы">
+        {#if onworkspace}<button class="pill" onclick={onworkspace} title="Настроить проект, папку и Git"><Icon name="folder" size={13} /><span>{workspace || 'Привязать проект / Git'}</span></button>{/if}
         {#if git}
           <button class="pill" class:on={git.active} aria-pressed={git.active} onclick={ongit} title={git.title || "Изменения в папке проекта"}>
             <Icon name="branch" size={13} /><span class="gl">{git.label}</span>{#if git.count}<b>{git.count}</b>{/if}

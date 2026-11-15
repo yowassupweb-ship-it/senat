@@ -172,7 +172,47 @@ pub async fn run(spec: RunSpec, _approver: &dyn Approver, tx: EventTx, mut cance
     if t.work.duration_ms == 0 {
         t.work.duration_ms = started.elapsed().as_millis() as u64;
     }
+    if let Some(id) = t.session_id.clone() {
+        if let Ok(Some((used, window))) = tokio::task::spawn_blocking(move || session_context(&id)).await {
+            t.work.context_tokens = used;
+            t.work.context_window = window;
+        }
+    }
     t.finish(stopped)
+}
+
+// Read only the matching session's telemetry. Never infer a model window from its name.
+fn session_context(id: &str) -> Option<(u64,u64)> {
+    use std::io::{Read, Seek, SeekFrom};
+    if id.is_empty() || !id.chars().all(|c|c.is_ascii_hexdigit() || c == '-') { return None; }
+    let home = std::env::var_os("CODEX_HOME").map(std::path::PathBuf::from).or_else(|| std::env::var_os("USERPROFILE").or_else(||std::env::var_os("HOME")).map(|h|std::path::PathBuf::from(h).join(".codex")))?;
+    fn find(root: &std::path::Path, id: &str, depth: usize) -> Option<std::path::PathBuf> {
+        for entry in std::fs::read_dir(root).ok()?.flatten() {
+            let path = entry.path();
+            if entry.file_type().ok()?.is_dir() && depth > 0 {
+                if let Some(p) = find(&path,id,depth-1) { return Some(p); }
+            } else if path.file_name()?.to_str()?.ends_with(&format!("-{id}.jsonl")) { return Some(path); }
+        }
+        None
+    }
+    let path = find(&home.join("sessions"),id,3)?;
+    let mut f = std::fs::File::open(path).ok()?;
+    let len = f.metadata().ok()?.len();
+    f.seek(SeekFrom::Start(len.saturating_sub(2*1024*1024))).ok()?;
+    let mut buf = Vec::new(); f.read_to_end(&mut buf).ok()?;
+    context_from_rollout(&String::from_utf8_lossy(&buf))
+}
+fn context_from_rollout(text: &str) -> Option<(u64,u64)> {
+    for line in text.lines().rev() {
+        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+        let p = &v["payload"];
+        if p["type"] != "token_count" { continue; }
+        let info = &p["info"];
+        let Some(window) = info["model_context_window"].as_u64().filter(|w|*w>0) else { continue };
+        let last = &info["last_token_usage"];
+        if let Some(used) = last["total_tokens"].as_u64().or_else(||last["input_tokens"].as_u64()) { return Some((used,window)); }
+    }
+    None
 }
 
 fn handle(line: &str, t: &mut Tracker) {
@@ -202,7 +242,7 @@ fn handle(line: &str, t: &mut Tracker) {
                 cached_input_tokens: g("cached_input_tokens"),
                 output_tokens: g("output_tokens"),
                 thinking_tokens: g("reasoning_output_tokens"),
-                context_tokens: g("input_tokens"),
+                // Aggregate turn usage is not the size of the active context.
                 turns: 1,
                 ..t.work.clone()
             };
@@ -285,5 +325,16 @@ fn item(it: &Value, started: bool, t: &mut Tracker) {
             }
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod context_tests {
+    use super::*;
+    #[test]
+    fn context_uses_latest_window_and_last_usage_not_cumulative_usage() {
+        let text = "bad partial line\n".to_string()+&json!({"payload":{"type":"token_count","info":{"model_context_window":100000,"last_token_usage":{"total_tokens":81000},"total_token_usage":{"total_tokens":9999999}}}}).to_string();
+        assert_eq!(context_from_rollout(&text),Some((81000,100000)));
+        assert_eq!(context_from_rollout("{\"payload\":{\"type\":\"token_count\",\"info\":null}}"),None);
     }
 }

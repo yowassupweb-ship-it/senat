@@ -190,6 +190,7 @@ pub fn system_prompt(store: &Store, agent: &Agent, project: Option<&Project>, co
         s += "\n";
     }
     s += PROTOCOL;
+    s += "\nУправление интерфейсом Senate: просьба привязать Git/репозиторий под композером → senate_workspace status, затем bind с папкой и компьютером. Привязать существующий проект → senate_attach. Показать страницу → senate_preview. Сжать/очистить контекст без потери истории → senate_chat_context compact; включить автокомпакт → configure auto=true. Узнать загрузку → status, восстановить детали старой переписки → history. Используй эти инструменты, а не инструкции человеку искать настройки.\n";
     Ok(s)
 }
 
@@ -264,7 +265,7 @@ pub fn chat_turn_prompt(store: &Store, agent: &Agent, thread: &Thread, text: &st
     let block = memory_block(&mem);
     // Open obligations are the agent's promises: remind, do not make the user repeat them.
     let open = store.list_obligations(Some(&agent.id), thread.project_id.as_deref(), true)?;
-    let mut s = String::new();
+    let mut s = String::from("Управление чатом: Git/папка под композером — senate_workspace; превью — senate_preview; загрузка, сжатие и история — senate_chat_context. Выполняй настройки инструментами. Перед использованием оборудования проверь senate_equipment. Путь всегда уточняй вместе с machine; tree/read в senate_workspace позволяют читать на машине проекта.\n");
     let named = mention_block(store, agent, thread, text)?;
     let hold = plan_hold_block(thread);
     if !block.is_empty() || !open.is_empty() || !named.is_empty() || !hold.is_empty() {
@@ -306,7 +307,7 @@ pub fn compact_prompt(extra: &str) -> String {
 ## Сделано\nконкретно: файлы, команды, адреса, id, результаты проверок\n\
 ## Открыто\nчто не доделано, чего ждём, следующий шаг\n\
 ## Важно помнить\nпожелания и правила владельца, ограничения, подводные камни\n\n\
-Пиши плотно и по делу, без вступлений. Сохраняй точные пути, имена, номера и команды: пересказ их теряет.",
+Объём сводки — примерно 2000–4000 токенов, без копирования больших файлов и выводов команд. Не включай секреты. Пиши плотно и по делу, без вступлений. Сохраняй точные пути, имена, номера и команды: пересказ их теряет.",
     );
     if !extra.trim().is_empty() {
         s += &format!("\n\nОсобо учти пожелание владельца к сводке: {}", extra.trim());
@@ -322,6 +323,17 @@ pub fn compact_preamble(summary: &str) -> String {
 /// Prompt for a session that exists because of an obligation (not a chat message).
 pub fn build_obligation_prompt(store: &Store, agent: &Agent, o: &Obligation, reason: &str) -> Result<String> {
     let mut s = String::new();
+    if let Some(pid) = &o.project_id { s += &project_block(store, &store.get_project(pid)?)?; }
+    if o.state == ObligationState::Review && o.reviewer_id.as_deref() == Some(&agent.id) {
+        s += &format!("Ты независимый проверяющий. Проверь результат по критериям и материалам. Результат исполнителя: {}\nОснования: {}\n", o.outcome, o.evidence);
+        s += "После проверки вызови senate_obligation_update с state=done и evidence (что проверил и что получил), либо state=accepted и note с конкретными замечаниями. Не исправляй результат вместо исполнителя. Не оставляй решение только в тексте.\n";
+    } else if o.reviewer_id.is_some() {
+        s += "Результат проверяет другой специалист. Передай state=review, outcome и evidence: ссылки на файлы/источники, выполненные проверки и их результат.\n";
+    }
+    for id in &o.dependencies {
+        let dep = store.get_obligation(id)?;
+        s += &format!("Входящий результат: {} [{}] id={}\n{}\nПроверки: {}\n", dep.title, dep.state.as_str(), dep.id, clip(&dep.outcome, 1200), clip(&dep.evidence, 800));
+    }
     s += &format!("Ты продолжаешь работу над задачей.\nПричина запуска: {reason}.\n\n");
     s += &format!("## Задачо: {}\nСостояние: {}\n", o.title, o.state.as_str());
     if !o.result.is_empty() {
@@ -466,4 +478,21 @@ fn mention_block(store: &Store, agent: &Agent, thread: &Thread, text: &str) -> R
         return Ok(s);
     }
     Ok(format!("## Упомянуто в сообщении (найдено средой)\n{s}\n"))
+}
+
+
+/// A bounded snapshot with durable references; never a copy of another agent's private memory.
+pub fn handoff_context(store: &Store, thread: &Thread, caller: &str) -> Result<String> {
+    let mut out = String::from("\n## Контекст передачи работы\n");
+    if let Some(pid) = &thread.project_id {
+        out += &project_block(store, &store.get_project(pid)?)?;
+        for o in store.list_obligations(Some(caller), Some(pid), true)?.iter().take(8) {
+            out += &format!("Задача {} (id={}, {}): {}\nКритерии: {}\nСледующий шаг: {}\n", o.title, o.id, o.state.as_str(), clip(&o.result, 600), clip(&o.criteria, 600), clip(&o.next_step, 400));
+        }
+        for a in store.list_artifacts(Some(pid))?.iter().take(8) {
+            out += &format!("Материал: {} (id={}, версия {}, обновлён {})\n", a.title, a.id, a.version, a.updated_at);
+        }
+    }
+    out += "Верни: результат и ссылку на него; что проверено и с каким итогом; открытые вопросы. Перед изменением материала перечитай актуальную версию.\n";
+    Ok(out)
 }

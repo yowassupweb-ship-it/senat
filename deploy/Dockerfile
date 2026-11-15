@@ -16,7 +16,7 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends git curl ca-certificates ripgrep openssh-client \
     python3 python3-pip poppler-utils \
  && rm -rf /var/lib/apt/lists/* \
- && pip3 install --no-cache-dir --break-system-packages pypdf pdfplumber reportlab openpyxl pandas python-docx python-pptx \
+ && pip3 install --no-cache-dir --break-system-packages uv pypdf pdfplumber reportlab openpyxl pandas python-docx python-pptx \
  && npm install -g @anthropic-ai/claude-code @openai/codex @moonshot-ai/kimi-code docx pptxgenjs \
  && npm cache clean --force
 COPY --from=build /src/target/release/senate-node /usr/local/bin/senate-node

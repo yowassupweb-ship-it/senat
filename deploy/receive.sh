@@ -42,7 +42,8 @@ case "$CMD" in
     head -c 200000000 > "$f"
     tar -tzf "$f" >/dev/null 2>&1 || { echo "Архив повреждён"; exit 1; }
     tar -xzf "$f" -O deploy/install.sh > "$DIR/install.sh.new" 2>/dev/null && [ -s "$DIR/install.sh.new" ] && mv "$DIR/install.sh.new" "$DIR/install.sh" || rm -f "$DIR/install.sh.new"
-    SENATE_PORT="$PORT" bash "$DIR/install.sh" "$f" 2>&1 | scrub
+    allow_interrupt=0; [ "$CMD" = "deploy force" ] && allow_interrupt=1
+    SENATE_ALLOW_INTERRUPT="$allow_interrupt" SENATE_PORT="$PORT" bash "$DIR/install.sh" "$f" 2>&1 | scrub
     rc="${PIPESTATUS[0]}"
     echo "health: $(curl -fsS --max-time 5 http://127.0.0.1:$PORT/api/health 2>/dev/null || echo 'нет ответа')"
     exit "$rc"

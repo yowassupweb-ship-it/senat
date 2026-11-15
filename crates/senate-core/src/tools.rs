@@ -33,6 +33,21 @@ pub fn definitions() -> Vec<ToolDef> {
     let mem_kinds = json!(["observation", "hypothesis", "verified", "preference", "decision", "error"]);
     vec![
         ToolDef {
+            name: "senate_equipment",
+            description: "Показать назначенные тебе MCP без секретов: команды, назначения, недостающие ключи. Проверяй перед работой; Windows-пути работают только на том компьютере, где установлен инструмент. Изменения состава применяются со следующего запуска. Не заявляй, что MCP работает, пока не вызвал его.",
+            schema:json!({"type":"object","properties":{}}),
+        },
+        ToolDef {
+            name: "senate_workspace",
+            description: "Привязать папку проекта и Git к чату: ветка и изменения появятся под композером, файлы — в панели проекта. tree/read читают дерево/файл на компьютере проекта по относительному path, даже если твой процесс на другой машине. Это настройка Senate, не git init/clone. Сначала status: увидишь проект, папку и компьютеры. bind: абсолютный path и machine (id компьютера, пустая строка — нода). Папка проверяется на выбранном компьютере. Если проекта нет, сначала senate_project_create и senate_attach. Новый путь применяется со следующего запуска; текущий процесс остаётся в прежней папке.",
+            schema: json!({"type":"object","properties":{"action":{"type":"string","enum":["status","bind","tree","read"]},"path":{"type":"string"},"machine":{"type":"string"}},"required":["action"]}),
+        },
+        ToolDef {
+            name: "senate_chat_context",
+            description: "Управление длинным чатом. status — заполнение контекста по участникам; configure с auto=true/false — автосжатие при 80%; compact — попросить сжатие своего контекста после текущего ответа (instructions: что обязательно сохранить). История не удаляется; новая сессия получает сводку целей, решений, файлов, проверок и незавершённой работы. Не обещай, что сжатие уже завершено: оно будет отдельным ходом. history — прочитать прежние сообщения, before — id для следующей страницы. Не редактируй базу Senate вручную.",
+            schema: json!({"type":"object","properties":{"action":{"type":"string","enum":["status","configure","compact","history"]},"auto":{"type":"boolean"},"instructions":{"type":"string"},"before":{"type":"string"}},"required":["action"]}),
+        },
+        ToolDef {
             name: "senate_recall",
             description: "Поиск в памяти Senate: личный опыт, знания проекта, проверенные общие знания. Исправленные записи не возвращаются.",
             schema: json!({"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"integer"},"company":{"type":"string","description":"название компании, если ищешь в её памяти"},"project":{"type":"string","description":"название проекта, если ищешь в его памяти"}},"required":["query"]}),
@@ -70,17 +85,17 @@ pub fn definitions() -> Vec<ToolDef> {
             name: "senate_obligation_create",
             description: "Принять на себя поручение или поставить его коллеге (owner = slug коллеги). Нужны ожидаемый результат и критерии завершения.",
             schema: json!({"type":"object","properties":{"title":{"type":"string"},"result":{"type":"string"},"criteria":{"type":"string"},
-                "owner":{"type":"string","description":"slug коллеги; по умолчанию — ты сам"},"next_step":{"type":"string"},"due_at":{"type":"integer","description":"unix мс"}},
+                "dependencies":{"type":"array","items":{"type":"string"},"description":"id всех задач, результат которых нужен до начала работы"},"reviewer":{"type":"string","description":"slug независимого проверяющего"},"owner":{"type":"string","description":"slug коллеги; по умолчанию — ты сам"},"next_step":{"type":"string"},"due_at":{"type":"integer","description":"unix мс"}},
                 "required":["title","result"]}),
         },
         ToolDef {
             name: "senate_obligation_update",
-            description: "Изменить состояние задачи. Свою — всегда; чужую или без исполнителя — если человек дал тебе такое право (иначе придёт pending_approval): так закрывают и отменяют задачи по просьбе человека, в любом проекте; пачку — через ids. done требует outcome (что получено), cancelled — outcome (причина отмены); blocked — blocker; waiting — wait (time | event | obligation | user). id по умолчанию — задача текущей сессии.",
+            description: "Изменить состояние задачи. Свою — всегда; чужую или без исполнителя — если человек дал тебе такое право (иначе придёт pending_approval): так закрывают и отменяют задачи по просьбе человека, в любом проекте; пачку — через ids. done требует outcome (что получено), cancelled — outcome (причина отмены); blocked — blocker; waiting — wait (time | event | obligation | obligations | user). С назначенным проверяющим передавай review с outcome и evidence. Проверяющий принимает через done с evidence либо возвращает через accepted с note. Исполнитель не принимает собственный результат. id по умолчанию — задача текущей сессии.",
             schema: json!({"type":"object","properties":{"id":{"type":"string"},
                 "ids":{"type":"array","items":{"type":"string"},"description":"несколько задач сразу с одним и тем же состоянием и причиной/результатом: так закрывают пачку; ответ — по каждой"},
-                "state":{"type":"string","enum":["running","waiting","blocked","review","done","cancelled"]},
-                "outcome":{"type":"string"},"next_step":{"type":"string"},"blocker":{"type":"string"},
-                "wait":{"type":"object","description":"{type:'time',at:<мс>} | {type:'event',kind,subject?} | {type:'obligation',id} | {type:'user'}"}},
+                "state":{"type":"string","enum":["accepted","running","waiting","blocked","review","done","cancelled"]},
+                "evidence":{"type":"string","description":"основания результата: файлы, выполненные проверки и их результаты, источники"},"note":{"type":"string","description":"замечания при возврате на доработку (accepted)"},"outcome":{"type":"string"},"next_step":{"type":"string"},"blocker":{"type":"string"},
+                "wait":{"type":"object","description":"{type:'time',at:<мс>} | {type:'event',kind,subject?} | {type:'obligation',id} | {type:'obligations',ids:[...]} | {type:'user'}"}},
                 "required":["state"]}),
         },
         ToolDef {
@@ -99,9 +114,14 @@ pub fn definitions() -> Vec<ToolDef> {
             schema: json!({"type":"object","properties":{"title":{"type":"string"},"body":{"type":"string"},"supersedes":{"type":"string"},"scope":{"type":"string","enum":["project","company"],"description":"company — общее решение для всех проектов компании"}},"required":["title"]}),
         },
         ToolDef {
+            name: "senate_artifact_read",
+            description: "Прочитать материал текущего проекта и его версию перед изменением.",
+            schema: json!({"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}),
+        },
+        ToolDef {
             name: "senate_artifact_save",
             description: "Сохранить артефакт проекта (документ, исследование, заметки). Для файлов кода используй обычные инструменты редактирования.",
-            schema: json!({"type":"object","properties":{"title":{"type":"string"},"kind":{"type":"string"},"body":{"type":"string"},"id":{"type":"string"}},"required":["title","body"]}),
+            schema: json!({"type":"object","properties":{"title":{"type":"string"},"kind":{"type":"string"},"body":{"type":"string"},"expected_version":{"type":"integer","description":"версия из senate_artifact_read; обязательна при изменении"},"id":{"type":"string"}},"required":["title","body"]}),
         },
         ToolDef {
             name: "senate_project_create",
@@ -146,8 +166,13 @@ pub fn definitions() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "senate_message_colleague",
-            description: "Записка коллеге — предупреждение, совет, факт, который ему важен прямо сейчас (например: «не запускай npm run build, пока идёт tauri dev»). Если он сейчас работает, увидит её с ближайшим ответом любого инструмента Senate; если свободен — записка сразу запускает его ход здесь (просьбу в ней он выполнит и отчитается тебе отдельным ходом). Ответ не ждёт; в результате видно, что произошло: delivered_now, delivered_started_turn или delivered_next_turn (ход не запущен — тогда скажи человеку). Проверить, прочитал ли, — senate_inbox. urgent=true для того, что может что-то сломать.",
+            description: "Записка коллеге — предупреждение, совет, факт, который ему важен прямо сейчас (например: «не запускай npm run build, пока идёт tauri dev»). Если он сейчас работает, увидит её с ближайшим ответом любого инструмента Senate; если свободен — записка сразу запускает его ход здесь (просьбу в ней он выполнит и отчитается тебе отдельным ходом). Ответ не ждёт; в результате видно, что произошло: queued_for_delivery, delivered_started_turn или delivered_next_turn (ход не запущен — тогда скажи человеку). Доставку и явное подтверждение показывает senate_inbox. Доставка не означает, что коллега учёл записку. urgent=true для того, что может что-то сломать.",
             schema: json!({"type":"object","properties":{"to":{"type":"string","description":"slug коллеги"},"text":{"type":"string"},"urgent":{"type":"boolean"}},"required":["to","text"]}),
+        },
+        ToolDef {
+            name: "senate_acknowledge_note",
+            description: "Подтвердить, что учёл записку коллеги. Срочные записки повторяются до подтверждения; сначала учти предупреждение в своей работе.",
+            schema: json!({"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}),
         },
         ToolDef {
             name: "senate_inbox",
@@ -331,6 +356,37 @@ fn call_inner(store: &Store, ctx: &ToolCtx, name: &str, a: &Value, bypass: bool)
             let loose = store.search_memory_in(q, Some(&ctx.agent_id), None, None, 5)?;
             Ok(json!({"matches": out, "general_memory": loose.iter().map(|e| e.body.chars().take(300).collect::<String>()).collect::<Vec<_>>()}))
         }
+        "senate_equipment" => Ok(json!({"servers":store.mcp_for_agent(&ctx.agent_id)?.iter().map(|m|m.view()).collect::<Vec<_>>(),"on_node":ctx.on_node,"note":"Назначение не гарантирует доступность на текущей машине. Используй инструменты MCP, опубликованные в этой сессии; не переносите локальные пути между компьютерами."})),
+        "senate_workspace" => {
+            let tid = ctx.thread_id.as_deref().ok_or_else(|| Error::invalid("нет чата"))?;
+            let t = store.get_thread(tid)?;
+            let p = t.project_id.as_deref().map(|id| store.get_project(id)).transpose()?;
+            if s(a,"action") != "status" { return Err(Error::invalid("bind выполняется через ноду Senate, где проверяется папка")); }
+            Ok(json!({"project":p,"machines":store.list_nodes()?,"next":"senate_workspace bind: path, machine; просмотр страницы — senate_preview; контекст — senate_chat_context; задачи — senate_obligations"}))
+        }
+        "senate_chat_context" => {
+            let tid = ctx.thread_id.as_deref().ok_or_else(|| Error::invalid("нет чата"))?;
+            match s(a,"action") {
+                "status" => store.chat_context(tid),
+                "configure" => {
+                    let enabled = a["auto"].as_bool().ok_or_else(|| Error::invalid("укажи auto: true или false"))?;
+                    store.set_forum_meta(tid,&json!({"context_auto":enabled}))?;
+                    store.chat_context(tid)
+                }
+                "compact" => {
+                    let session = ctx.session_id.as_deref().ok_or_else(|| Error::invalid("нет текущей сессии"))?;
+                    let run = store.get_session(session)?;
+                    let mid = run.message_id.ok_or_else(|| Error::invalid("нет сообщения"))?;
+                    let mut m = store.get_message(&mid)?;
+                    if m.props["compact"] == true { return Err(Error::invalid("сжатие уже идёт: напиши сводку без инструментов")); }
+                    m.props["compact_requested"] = json!(s(a,"instructions"));
+                    store.update_message(&mid,None,Some(&m.props),None)?;
+                    Ok(json!({"status":"after_this_turn","note":"Сжатие запустится после успешного завершения ответа. История сохранится."}))
+                }
+                "history" => Ok(json!({"messages":store.list_messages(tid,a["before"].as_str(),30)?,"pagination":"Для более ранних сообщений передай before=id первого сообщения этой страницы"})),
+                _ => Err(Error::invalid("action: status, configure, compact или history")),
+            }
+        }
         "senate_attach" => {
             let tid = ctx.thread_id.clone().ok_or_else(|| Error::invalid("у этого запуска нет разговора"))?;
             let project = if s(a, "project").is_empty() { None } else { project_by_name(store, s(a, "project"))? };
@@ -429,8 +485,10 @@ fn call_inner(store: &Store, ctx: &ToolCtx, name: &str, a: &Value, bypass: bool)
                 "owner": o.owner_id.as_ref().and_then(|i| slugs.get(i)).cloned().unwrap_or_default(),
                 "project": o.project_id.as_ref().and_then(|i| projects.get(i)).cloned().unwrap_or_default(),
                 "next_step": o.next_step, "result": o.result, "criteria": o.criteria,
+                "dependencies": o.dependencies, "parent_id": o.parent_id,
+                "reviewer": o.reviewer_id.as_ref().and_then(|id| slugs.get(id)), "evidence": o.evidence, "outcome": o.outcome,
                 // why it stands still, right in the list: no digging through the history
-                "blocker": if o.state == ObligationState::Blocked { json!(o.blocker) } else { Value::Null },
+                "blocker": if !o.blocker.is_empty() { json!(o.blocker) } else { Value::Null },
                 "waiting_for": o.wait_condition.as_ref().map(|w| json!(w)).unwrap_or(Value::Null),
             })).collect::<Vec<_>>()))
         }
@@ -451,6 +509,8 @@ fn call_inner(store: &Store, ctx: &ToolCtx, name: &str, a: &Value, bypass: bool)
                 next_step: s(a, "next_step").into(),
                 due_at: a.get("due_at").and_then(|v| v.as_i64()),
                 budget_tokens: 0,
+                dependencies: serde_json::from_value(a.get("dependencies").cloned().unwrap_or(json!([]))).map_err(|_| Error::invalid("dependencies: нужен список id"))?,
+                reviewer_id: if s(a, "reviewer").is_empty() { None } else { Some(store.get_agent(s(a, "reviewer"))?.id) },
             })?;
             Ok(json!({"id": o.id, "owner": owner, "state": o.state.as_str()}))
         }
@@ -475,15 +535,17 @@ fn call_inner(store: &Store, ctx: &ToolCtx, name: &str, a: &Value, bypass: bool)
             let id = if s(a, "id").is_empty() { ctx.obligation_id.clone().ok_or_else(|| Error::invalid("укажите id задача"))? } else { s(a, "id").to_string() };
             let cur = store.get_obligation(&id)?;
             let own = cur.owner_id.as_deref() == Some(&ctx.agent_id);
-            if !own {
+            let reviewing = cur.state == ObligationState::Review && cur.reviewer_id.as_deref() == Some(&ctx.agent_id)
+                && matches!(s(a, "state"), "done" | "accepted");
+            if !own && !reviewing {
                 if let Some(p) = gate(store, ctx, action::OBLIGATION_MANAGE, name, a, bypass)? {
                     return Ok(p);
                 }
             }
             let mut to = ObligationState::parse(s(a, "state")).ok_or_else(|| Error::invalid("неизвестное состояние"))?;
             // "Done" is a claim. With criteria on the table somebody other than the author checks it.
-            let mut note = String::new();
-            if own && to == ObligationState::Done && !cur.criteria.trim().is_empty() && cur.state != ObligationState::Review {
+            let mut note = s(a, "note").to_string();
+            if own && to == ObligationState::Done && (!cur.criteria.trim().is_empty() || cur.reviewer_id.is_some()) && cur.state != ObligationState::Review {
                 to = ObligationState::Review;
                 note = "готово по заявлению исполнителя; нужна проверка по критериям".into();
             }
@@ -505,6 +567,7 @@ fn call_inner(store: &Store, ctx: &ToolCtx, name: &str, a: &Value, bypass: bool)
                     outcome: if s(a, "outcome").is_empty() { None } else { Some(s(a, "outcome").into()) },
                     next_step: if s(a, "next_step").is_empty() { None } else { Some(s(a, "next_step").into()) },
                     note,
+                    evidence: a["evidence"].as_str().map(String::from),
                 },
                 &ctx.agent_id,
             )?;
@@ -550,13 +613,14 @@ fn call_inner(store: &Store, ctx: &ToolCtx, name: &str, a: &Value, bypass: bool)
             };
             Ok(json!({"id": d.id, "status": "proposed"}))
         }
+        "senate_artifact_read" => Ok(serde_json::to_value(store.read_artifact(s(a, "id"), ctx.project_id.as_deref())?)?),
         "senate_artifact_save" => {
             if let Some(p) = gate(store, ctx, action::ARTIFACT_WRITE, name, a, bypass)? {
                 return Ok(p);
             }
             let kind = if s(a, "kind").is_empty() { "document" } else { s(a, "kind") };
             let id = if s(a, "id").is_empty() { None } else { Some(s(a, "id")) };
-            let art = store.save_artifact(id, ctx.project_id.as_deref(), kind, s(a, "title"), s(a, "body"), &ctx.agent_id)?;
+            let art = store.save_artifact(id, a["expected_version"].as_i64(), ctx.project_id.as_deref(), kind, s(a, "title"), s(a, "body"), &ctx.agent_id)?;
             Ok(json!({"id": art.id, "version": art.version}))
         }
         "senate_project_create" => {
@@ -689,15 +753,19 @@ fn call_inner(store: &Store, ctx: &ToolCtx, name: &str, a: &Value, bypass: bool)
                 let _ = store.post_message(t, "agent", Some(&from.id), &format!("Записка @{}: {}", to.slug, text), json!({"note": {"to": to.id, "id": id, "urgent": urgent}}), MessageStatus::Done, None);
             }
             Ok(json!({
-                "status": if busy { "delivered_now" } else { "delivered_next_turn" },
+                "status": if busy { "queued_for_delivery" } else { "delivered_next_turn" },
                 "note_id": id,
                 "note": if busy { format!("{} сейчас работает (или его ход в очереди) и увидит записку с ближайшим ответом инструмента Senate или в начале хода. Прочитана ли — senate_inbox.", to.name) } else { format!("{} увидит записку в начале следующего хода.", to.name) },
             }))
         }
+        "senate_acknowledge_note" => {
+            store.acknowledge_note(s(a, "id"), &ctx.agent_id)?;
+            Ok(json!({"status":"acknowledged"}))
+        }
         "senate_inbox" => {
             let notes = store.take_notes(&ctx.agent_id)?;
             let sent = store.sent_notes(&ctx.agent_id, 10)?;
-            Ok(json!({"new": notes, "sent": sent.iter().map(|n| json!({"to": n["to"], "text": n["text"], "read": !n["read_at"].is_null()})).collect::<Vec<_>>()}))
+            Ok(json!({"new": notes, "sent": sent.iter().map(|n| json!({"id": n["id"], "to": n["to"], "text": n["text"], "delivered": !n["read_at"].is_null(), "acknowledged": !n["acknowledged_at"].is_null()})).collect::<Vec<_>>()}))
         }
         "senate_access_list" => {
             let list: Vec<Value> = store

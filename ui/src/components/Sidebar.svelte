@@ -11,6 +11,8 @@
 
   let { onforum }: { onforum: () => void } = $props();
 
+  const currentThread = $derived(app.view.kind === 'chat' ? app.threads.find(t => t.id === (app.view as { id: string }).id) : undefined);
+  function openProjectFiles() { app.panelTab = 'files'; app.panel = true; app.sidebar = false; }
   let q = $state('');
   let navigation: HTMLElement;
   $effect(() => {
@@ -145,6 +147,7 @@
     <button class="new ghost" onclick={onforum} title="Обсудить широкий вопрос вместе и спланировать работу"><Icon name="forum" size={15} />Форум</button>
   </div>
 
+  {#if currentThread}<button class="nav" onclick={openProjectFiles}><Icon name="folder" size={14} />Папка проекта</button>{/if}
   <div class="search">
     <Icon name="search" size={13} />
     <input bind:value={q} placeholder="Найти чат" aria-label="Найти чат" />

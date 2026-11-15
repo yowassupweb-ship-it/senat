@@ -236,12 +236,19 @@ pub(crate) fn environment() -> Value {
             ];
             let mut have = serde_json::Map::new();
             let mut missing = vec![];
-            for (name, cmd, args) in probes {
-                match version_of(cmd, args) {
+            // Independent probes must not stack their timeouts on the first agent turn.
+            let versions = std::thread::scope(|scope| {
+                let jobs: Vec<_> = probes.iter().map(|(name, cmd, args)| {
+                    (*name, scope.spawn(move || version_of(cmd, args)))
+                }).collect();
+                jobs.into_iter().map(|(name, job)| (name, job.join().unwrap_or(None))).collect::<Vec<_>>()
+            });
+            for (name, version) in versions {
+                match version {
                     Some(v) => {
                         have.insert(name.to_string(), json!(v));
                     }
-                    None => missing.push(*name),
+                    None => missing.push(name),
                 }
             }
             json!({"os": std::env::consts::OS, "shell": if cfg!(windows) { "Git Bash у Claude и Kimi, PowerShell у Codex" } else { "bash" }, "tools": have, "missing": missing})

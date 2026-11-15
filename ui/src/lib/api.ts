@@ -97,28 +97,36 @@ export class ApiError extends Error {
   }
 }
 
-export async function api<T = any>(path: string, init: { method?: string; body?: unknown } = {}): Promise<T> {
+export async function api<T = any>(path: string, init: { method?: string; body?: unknown; timeoutMs?: number } = {}): Promise<T> {
   let res: Response;
+  const controller = new AbortController();
+  const timer = init.timeoutMs ? setTimeout(() => controller.abort(), init.timeoutMs) : undefined;
   try {
     res = await fetch(base + path, {
       method: init.method || (init.body !== undefined ? 'POST' : 'GET'),
       headers: { Authorization: `Bearer ${token}`, ...(init.body !== undefined ? { 'Content-Type': 'application/json' } : {}) },
       body: init.body !== undefined ? JSON.stringify(init.body) : undefined,
       cache: 'no-store',
+      signal: controller.signal,
     });
   } catch {
+    clearTimeout(timer);
     throw new ApiError(0, 'Нет связи с Senate');
   }
-  if (!res.ok) {
-    let msg = res.statusText;
-    try {
-      msg = (await res.json()).error || msg;
-    } catch {
-      /* not json */
+  try {
+    if (!res.ok) {
+      let msg = res.statusText;
+      try {
+        msg = (await res.json()).error || msg;
+      } catch {
+        /* not json */
+      }
+      throw new ApiError(res.status, msg);
     }
-    throw new ApiError(res.status, msg);
+    return await res.json();
+  } finally {
+    clearTimeout(timer);
   }
-  return res.json();
 }
 
 export const get = <T = any>(p: string) => api<T>(p);

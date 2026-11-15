@@ -282,11 +282,19 @@ pub(crate) fn clip(s: &str, n: usize) -> String {
 
 /// Which agent CLIs are installed on this machine (login state is checked separately, see `auth`).
 pub async fn discover() -> Vec<Value> {
-    let mut out = vec![];
+    let mut jobs = Vec::new();
     for (id, label, _) in auth::PROVIDERS {
         if let Some(path) = cli::resolve(id) {
-            let version = cli::version(&path).await.unwrap_or_default();
-            out.push(json!({"backend": id, "label": label, "version": version, "path": path.to_string_lossy()}));
+            jobs.push(tokio::spawn(async move {
+                let version = cli::version(&path).await.unwrap_or_default();
+                json!({"backend": id, "label": label, "version": version, "path": path.to_string_lossy()})
+            }));
+        }
+    }
+    let mut out = vec![];
+    for job in jobs {
+        if let Ok(info) = job.await {
+            out.push(info);
         }
     }
     out

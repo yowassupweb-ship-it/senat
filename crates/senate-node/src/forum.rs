@@ -7,7 +7,6 @@
 //! it — an idea does not turn into an assignment by itself.
 
 use crate::{executor, App};
-use senate_core::engine::TransitionArgs;
 use senate_core::model::*;
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -183,8 +182,13 @@ fn parse_plan(store: &senate_core::Store, text: &str) -> Value {
 
 /// The user accepts the plan: tasks and decisions come into being (once).
 pub(crate) fn apply_plan(app: &Arc<App>, tid: &str) -> Result<Value, String> {
+    // Serialize acceptance, including repeated HTTP requests on different runtime threads.
+    let _guard = app.forums.lock().unwrap();
     let store = &app.store;
     let thread = store.get_thread(tid).map_err(|e| e.to_string())?;
+    if thread.kind != ThreadKind::Forum || thread.meta["status"] != "concluded" {
+        return Err("сначала завершите обсуждение плана".into());
+    }
     if thread.meta["plan_applied"] == true {
         return Err("план уже принят".into());
     }
@@ -195,31 +199,48 @@ pub(crate) fn apply_plan(app: &Arc<App>, tid: &str) -> Result<Value, String> {
     let mut ids: std::collections::HashMap<String, String> = Default::default();
     let mut tasks = 0;
     let work = plan["work"].as_array().cloned().unwrap_or_default();
+    // Validate the entire graph before creating anything. Titles must be unambiguous.
+    let mut remaining = work.clone();
+    let mut ordered = Vec::new();
+    let mut titles = std::collections::HashSet::new();
     for w in &work {
-        let title = w["title"].as_str().unwrap_or("").trim().to_string();
-        if title.is_empty() {
-            continue;
+        let title = w["title"].as_str().unwrap_or("").trim();
+        if title.is_empty() || !titles.insert(title.to_string()) { return Err("названия задач должны быть непустыми и уникальными".into()); }
+        let owner = w["owner_id"].as_str().ok_or("у каждой задачи должен быть исполнитель")?;
+        store.get_agent(owner).map_err(|e| e.to_string())?;
+    }
+    for w in &work {
+        if !w["depends_on"].is_null() && !w["depends_on"].is_array() { return Err("depends_on должен быть списком названий задач".into()); }
+        if let Some(deps) = w["depends_on"].as_array() {
+            for dep in deps {
+                if !titles.contains(dep.as_str().unwrap_or("").trim()) { return Err("в плане неизвестная зависимость".into()); }
+            }
         }
-        let o = store
-            .create_obligation(NewObligation {
-                title: title.clone(),
-                result: w["result"].as_str().unwrap_or("").into(),
-                criteria: w["criteria"].as_str().unwrap_or("").into(),
-                owner_id: w["owner_id"].as_str().map(String::from),
-                project_id: thread.project_id.clone(),
-                requested_by: "forum".into(),
-                ..Default::default()
-            })
-            .map_err(|e| e.to_string())?;
+    }
+    let mut ready = std::collections::HashSet::new();
+    while !remaining.is_empty() {
+        let Some(index) = remaining.iter().position(|w| w["depends_on"].as_array().map(|deps| deps.iter().all(|d| ready.contains(d.as_str().unwrap_or("").trim()))).unwrap_or(true)) else {
+            return Err("круговая зависимость между задачами плана".into());
+        };
+        let w = remaining.remove(index);
+        ready.insert(w["title"].as_str().unwrap().trim().to_string());
+        ordered.push(w);
+    }
+    for w in &ordered {
+        let title = w["title"].as_str().unwrap().trim().to_string();
+        let dependencies = w["depends_on"].as_array().map(|deps| deps.iter().map(|d| ids[d.as_str().unwrap().trim()].clone()).collect()).unwrap_or_default();
+        let o = store.create_obligation(NewObligation {
+            title: title.clone(),
+            result: w["result"].as_str().unwrap_or("").into(),
+            criteria: w["criteria"].as_str().unwrap_or("").into(),
+            owner_id: w["owner_id"].as_str().map(String::from),
+            project_id: thread.project_id.clone(),
+            requested_by: "forum".into(),
+            dependencies,
+            ..Default::default()
+        }).map_err(|e| e.to_string())?;
         ids.insert(title, o.id);
         tasks += 1;
-    }
-    // Dependencies: a task waits for the one it depends on.
-    for w in &work {
-        let Some(me) = ids.get(w["title"].as_str().unwrap_or("")) else { continue };
-        if let Some(dep) = w["depends_on"].as_array().and_then(|d| d.iter().filter_map(|x| x.as_str()).find_map(|t| ids.get(t))) {
-            let _ = store.transition(me, ObligationState::Waiting, TransitionArgs { wait: Some(WaitCondition::Obligation { id: dep.clone() }), note: "зависит от другой задачи форума".into(), ..Default::default() }, "forum");
-        }
     }
     let mut decisions = 0;
     for d in plan["decisions"].as_array().cloned().unwrap_or_default() {

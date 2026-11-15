@@ -244,6 +244,8 @@ export interface PermissionRule {
 }
 
 export interface MessageProps {
+  client_id?: string;
+  request_message_id?: string;
   /** This failed turn was run again: the new message. */
   retried_by?: string;
   /** A question the specialist asked the person mid-work (senate_ask_person). */
@@ -307,6 +309,9 @@ export interface Obligation {
   parent_id: string | null;
   requested_by: string;
   state: 'accepted' | 'running' | 'waiting' | 'blocked' | 'review' | 'done' | 'cancelled';
+  dependencies?: string[];
+  reviewer_id?: string | null;
+  evidence?: string;
   next_step: string;
   wait_condition: any;
   blocker: string;
@@ -372,6 +377,7 @@ export interface Attention {
 
 /** One running or waiting session, from /api/live: what the right-hand panel shows. */
 export interface LiveRun {
+  workspace?: { project_id: string | null; machine: string | null; path: string | null; captured: boolean };
   session_id: string;
   agent_id: string;
   kind: 'chat' | 'task' | 'run';

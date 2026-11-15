@@ -32,7 +32,8 @@ pub(crate) fn recover(app: &Arc<App>) {
 pub(crate) async fn run_loop(app: Arc<App>, mut stop: watch::Receiver<bool>) {
     let sem = Arc::new(Semaphore::new(app.cfg.parallel.max(1)));
     crate::skills::sync_routines(&app);
-    let mut ticks: u32 = 0;
+    let mut skills_checked = std::time::Instant::now();
+    let mut council_checked = std::time::Instant::now();
     loop {
         tokio::select! {
             _ = app.wake.notified() => {}
@@ -43,12 +44,13 @@ pub(crate) async fn run_loop(app: Arc<App>, mut stop: watch::Receiver<bool>) {
             break;
         }
         // skills may appear while the app runs: look for their routines about once a minute
-        ticks = ticks.wrapping_add(1);
-        if ticks % 30 == 0 {
+        if skills_checked.elapsed() >= Duration::from_secs(60) {
             crate::skills::sync_routines(&app);
+            skills_checked = std::time::Instant::now();
         }
         // a council does not wait forever for one silent member: after a while the convener goes on with what came
-        if ticks % 15 == 0 {
+        if council_checked.elapsed() >= Duration::from_secs(30) {
+            council_checked = std::time::Instant::now();
             let minutes = app.store.setting("council_minutes").ok().flatten().and_then(|v| v.trim().parse::<i64>().ok()).unwrap_or(10).clamp(2, 120);
             match app.store.council_deadline(minutes, &app.backend_default()) {
                 Ok(started) if !started.is_empty() => {
@@ -88,8 +90,9 @@ pub(crate) async fn run_loop(app: Arc<App>, mut stop: watch::Receiver<bool>) {
                 Ok(Some(s)) => {
                     let a = app.clone();
                     tokio::spawn(async move {
-                        execute(a, s).await;
+                        execute(a.clone(), s).await;
                         drop(permit);
+                        a.poke();
                     });
                 }
                 _ => break,
@@ -192,6 +195,9 @@ fn flush(app: &App, msg_id: &str, p: &mut Progress) {
 }
 
 pub(crate) async fn execute(app: Arc<App>, s: Session) {
+    let preparation_started = std::time::Instant::now();
+    let queue_ms = senate_core::now_ms().saturating_sub(s.created_at);
+    tracing::info!(session = %s.id, queue_ms, "session claimed");
     let store = &app.store;
     let Ok(agent) = store.get_agent(&s.agent_id) else {
         let _ = store.finish_session(&s.id, SessionStatus::Failed, "", "", "специалист не найден", 0, 0);
@@ -234,11 +240,14 @@ pub(crate) async fn execute(app: Arc<App>, s: Session) {
     // The computer the turn goes to is fixed now, so the session continued is that computer's own.
     let project_machine = if local && project_machine.is_none() { app.runner.latest_machine() } else { project_machine };
     // CLI sessions live on the computer that ran them: a session from one computer means nothing on another.
-    let session_key = match (&project_machine, local) {
+    let mut session_key = match (&project_machine, local) {
         (Some(m), _) => format!("{provider}@{m}"),
         (None, true) => format!("{provider}@local"),
         _ => provider.clone(),
     };
+    if let Some(revision) = project.as_ref().and_then(|p|store.setting(&format!("workspace_revision:{}",p.id)).ok().flatten()) {
+        session_key += &format!("@workspace-{revision}");
+    }
     let is_forum_thread = thread.as_ref().map(|t| t.kind == ThreadKind::Forum).unwrap_or(false);
     // One CLI session per specialist in a chat, not per chat: two specialists sharing one would resume the same
     // session (a CLI lets only one process write to it) and would wear each other's identity and history.
@@ -280,7 +289,9 @@ pub(crate) async fn execute(app: Arc<App>, s: Session) {
 
     // After `/compact` a fresh session knows the chat only through the specialist's own summary of it.
     let compact_turn = store.get_message(&msg_id).map(|m| m.props["compact"].as_bool().unwrap_or(false)).unwrap_or(false);
-    let mut turn_prompt = s.prompt.clone();
+    let mut turn_prompt = if let Some(oid) = &s.obligation_id {
+        store.get_obligation(oid).and_then(|o| senate_core::workset::build_obligation_prompt(store, &agent, &o, &s.reason)).unwrap_or_else(|_| s.prompt.clone())
+    } else { s.prompt.clone() };
     // notes colleagues left while this specialist was away come with the turn
     if let Ok(notes) = store.take_notes(&agent.id) {
         if !notes.is_empty() {
@@ -289,9 +300,23 @@ pub(crate) async fn execute(app: Arc<App>, s: Session) {
             let _ = store.set_session_prompt(&s.id, &turn_prompt);
         }
     }
-    if resume.is_none() && !compact_turn {
+    if resume.is_none() {
         if let Some(sum) = thread.as_ref().and_then(|t| senate_core::store::Store::compact_summary(t, &agent.id)) {
             turn_prompt = senate_core::workset::compact_preamble(&sum) + &turn_prompt;
+        }
+    }
+
+    if is_chat && !is_forum_thread && resume.is_none() {
+        if let Some(t) = thread.as_ref() {
+            let history = store.list_messages(&t.id,None,100).unwrap_or_default();
+            let mut transcript = String::new();
+            let since = t.meta["compact"][&agent.id]["at"].as_i64().unwrap_or(0);
+            for m in history.iter().filter(|m| !m.body.is_empty() && m.status == MessageStatus::Done && m.created_at > since) {
+                transcript += &format!("\n[{} {}] {}\n",m.author_kind,m.id,m.body.chars().take(6000).collect::<String>());
+            }
+            // Bound recovery input; the durable history remains available via senate_chat_context history.
+            let tail: String = transcript.chars().rev().take(60000).collect::<String>().chars().rev().collect();
+            turn_prompt = format!("<chat-history>\n{tail}\n</chat-history>\n{turn_prompt}");
         }
     }
 
@@ -327,6 +352,8 @@ pub(crate) async fn execute(app: Arc<App>, s: Session) {
 
     let (tx, mut rx) = mpsc::unbounded_channel::<Event>();
     let approver = NodeApprover { app: app.clone(), message_id: msg_id.clone(), cwd: cwd_for_rules.clone() };
+    let preparation_ms = preparation_started.elapsed().as_millis() as u64;
+    let runtime_started = std::time::Instant::now();
 
     // Consumer: coalesces fast progress into ~8 updates a second.
     let consumer = {
@@ -337,12 +364,16 @@ pub(crate) async fn execute(app: Arc<App>, s: Session) {
         tokio::spawn(async move {
             let mut acc = Progress::default();
             let mut sid: Option<String> = None;
+            let mut first_activity_ms = None;
             let mut tick = tokio::time::interval(Duration::from_millis(120));
             loop {
                 tokio::select! {
                     ev = rx.recv() => match ev {
                         None => break,
                         Some(Event::Progress(p)) => {
+                            if first_activity_ms.is_none() && (p.body.as_ref().is_some_and(|s| !s.is_empty()) || p.reasoning.as_ref().is_some_and(|s| !s.is_empty()) || p.steps.as_ref().is_some_and(|s| !s.is_empty())) {
+                                first_activity_ms = Some(runtime_started.elapsed().as_millis() as u64);
+                            }
                             if p.session_id.is_some() { sid = p.session_id.clone(); }
                             if let Some(w) = &p.limits { crate::accounts::note_limits(&app, &provider_c, w); }
                             merge(&mut acc, *p);
@@ -369,16 +400,19 @@ pub(crate) async fn execute(app: Arc<App>, s: Session) {
                 }
             }
             flush(&app, &msg_id, &mut acc);
-            sid
+            (sid, first_activity_ms)
         })
     };
 
+    tracing::info!(session = %s.id, preparation_ms = preparation_started.elapsed().as_millis() as u64, local, "session prepared");
     let outcome = if local {
         crate::runner::remote_run(&app, spec, &agent.slug, project_machine.as_deref(), &approver, tx, cancel_rx).await
     } else {
         senate_runtime::run(spec, &approver, tx, cancel_rx).await
     };
-    let sid = consumer.await.ok().flatten();
+    let (sid, first_activity_ms) = consumer.await.unwrap_or_default();
+    let runtime_ms = runtime_started.elapsed().as_millis() as u64;
+    tracing::info!(session = %s.id, queue_ms, preparation_ms, runtime_ms, ?first_activity_ms, "session timing");
 
     // ---- finalize ----
     app.cancels.lock().unwrap().remove(&s.id);
@@ -387,7 +421,7 @@ pub(crate) async fn execute(app: Arc<App>, s: Session) {
 
     let status = if outcome.stopped {
         MessageStatus::Cancelled
-    } else if outcome.failure.is_some() {
+    } else if outcome.failure.is_some() || (compact_turn && outcome.text.trim().is_empty()) {
         MessageStatus::Failed
     } else {
         MessageStatus::Done
@@ -395,7 +429,9 @@ pub(crate) async fn execute(app: Arc<App>, s: Session) {
     let mut props = json!({
         "steps": outcome.steps, "work": outcome.work, "model": outcome.model, "phase": null,
         "ask": null, "backend": s.backend,
+        "timing": {"queue_ms": queue_ms, "preparation_ms": preparation_ms, "runtime_ms": runtime_ms, "first_activity_ms": first_activity_ms},
     });
+    if compact_turn && status == MessageStatus::Failed && outcome.failure.is_none() { props["error"] = json!("Сводка пуста. Прежний контекст сохранён; повторите сжатие."); }
     if let Some(f) = &outcome.failure {
         props["error"] = json!(f);
     }
@@ -447,6 +483,22 @@ pub(crate) async fn execute(app: Arc<App>, s: Session) {
             }
         }
     }
+    // Queue a summary only after a successful ordinary turn. A failed summary never resets the session.
+    if !compact_turn && status == MessageStatus::Done && is_chat && !is_forum_thread {
+        if let Some(t) = thread.as_ref() {
+            let _guard = app.chat_send.lock().unwrap();
+            let request = store.get_message(&msg_id).ok().and_then(|m|m.props["compact_requested"].as_str().map(String::from));
+            match store.queue_chat_compact(&t.id,&agent.id,&s.backend,request.as_deref().unwrap_or(""),request.is_none()) {
+                Ok(Some(next)) => {
+                    if let Some(mid) = next.message_id {
+                        if let Ok(m) = store.get_message(&mid) { app.publish("message",serde_json::to_value(m).unwrap_or_default()); }
+                    }
+                }
+                Err(e) => tracing::warn!("could not queue compaction: {e}"),
+                _ => {}
+            }
+        }
+    }
     let sess_status = match status {
         MessageStatus::Cancelled => SessionStatus::Cancelled,
         MessageStatus::Failed => SessionStatus::Failed,
@@ -485,6 +537,11 @@ fn settle_obligation(app: &App, oid: &str, s: &Session, status: MessageStatus, e
     let why = error.map(|e| e.trim()).filter(|e| !e.is_empty()).map(|e| format!(" Причина: {}", e.chars().take(400).collect::<String>())).unwrap_or_default();
     let store = &app.store;
     let Ok(o) = store.get_obligation(oid) else { return };
+    if o.state == ObligationState::Review && o.reviewer_id.as_deref() == Some(&s.agent_id) {
+        let problem = format!("Проверяющий не вынес решение.{why} Проверьте результат вручную или верните задачу в работу с замечаниями.");
+        let _ = store.record_review_problem(oid, &problem);
+        return;
+    }
     if o.state != ObligationState::Running {
         return; // the agent set the end state itself (done / review / waiting / blocked)
     }

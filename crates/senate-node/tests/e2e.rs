@@ -40,6 +40,51 @@ fn last_agent_msg(v: &Value) -> Value {
 }
 
 #[tokio::test]
+async fn retried_chat_send_is_durable_and_never_dispatches_twice() {
+    let (h, c, base) = boot().await;
+    let (_, t) = post(&c, &base, "/api/threads", json!({})).await;
+    let tid = t["id"].as_str().unwrap();
+    let path = format!("/api/threads/{tid}/messages");
+    let body = json!({"text":"Проверка доставки", "client_id":"delivery-test-1"});
+    let (first, second) = tokio::join!(post(&c, &base, &path, body.clone()), post(&c, &base, &path, body.clone()));
+    assert_eq!(first.0, 200);
+    assert_eq!(second.0, 200);
+    assert_eq!(first.1["user_message"]["id"], second.1["user_message"]["id"]);
+    assert_eq!(first.1["agent_messages"][0]["id"], second.1["agent_messages"][0]["id"]);
+    assert!(first.1["sessions"][0].get("prompt").is_none());
+    until(&c, &base, &path, |v| last_agent_msg(v)["status"] == "done").await;
+    let cfg = h.app.cfg.clone();
+    h.stop().await;
+    let restarted = serve(cfg).await.unwrap();
+    let base = restarted.url();
+    let (status, replay) = post(&c, &base, &path, body).await;
+    assert_eq!(status, 200);
+    assert_eq!(replay["agent_messages"][0]["status"], "done");
+    let all = get(&c, &base, &path).await;
+    assert_eq!(all["messages"].as_array().unwrap().iter().filter(|m| m["author_kind"] == "user").count(), 1);
+    let (status, _) = post(&c, &base, &path, json!({"text":"Другой текст", "client_id":"delivery-test-1"})).await;
+    assert_eq!(status, 400);
+    let page = get(&c, &base, &format!("{path}?limit=1")).await;
+    assert_eq!(page["messages"].as_array().unwrap().len(), 1);
+    assert_eq!(page["has_more"], true);
+    restarted.stop().await;
+}
+
+#[tokio::test]
+async fn histories_are_compressed_but_live_events_are_not_buffered() {
+    let (h, c, base) = boot().await;
+    let plain = c.get(format!("{base}/api/state")).bearer_auth("t".repeat(40)).send().await.unwrap().bytes().await.unwrap();
+    let zipped = c.get(format!("{base}/api/state")).bearer_auth("t".repeat(40)).header("Accept-Encoding", "gzip").send().await.unwrap();
+    assert_eq!(zipped.headers()["content-encoding"], "gzip");
+    let zipped = zipped.bytes().await.unwrap();
+    assert!(zipped.len() < plain.len() / 2, "{} vs {} bytes", zipped.len(), plain.len());
+    let events = c.get(format!("{base}/api/events")).bearer_auth("t".repeat(40)).header("Accept-Encoding", "gzip").send().await.unwrap();
+    assert!(!events.headers().contains_key("content-encoding"));
+    drop(events);
+    h.stop().await;
+}
+
+#[tokio::test]
 async fn api_requires_the_token() {
     let (h, c, base) = boot().await;
     assert_eq!(c.get(format!("{base}/api/state")).send().await.unwrap().status(), 401);
@@ -199,5 +244,83 @@ async fn real_claude_edits_files_locally_and_writes_memory_through_mcp() {
     // the CLI session is remembered so the chat resumes
     let th = get(&c, &base, &format!("/api/threads/{tid}")).await;
     assert!(th["cli_sessions"].as_object().unwrap().iter().any(|(k, v)| k.starts_with("claude:") && v.is_string()), "one session per specialist: {}", th["cli_sessions"]);
+    h.stop().await;
+}
+
+
+#[tokio::test]
+async fn forum_acceptance_preserves_every_dependency_and_rejects_invalid_graphs() {
+    use senate_core::model::{NewAgent, NewProject, NewForum};
+    let (h,c,base)=boot().await;
+    let a=h.app.store.create_agent(NewAgent {name:"Writer".into(),..Default::default()}).unwrap();
+    let b=h.app.store.create_agent(NewAgent {name:"Designer".into(),..Default::default()}).unwrap();
+    let p=h.app.store.create_project(NewProject {name:"Team test".into(),..Default::default()}).unwrap();
+    h.app.store.update_project(&p.id,senate_core::store::ProjectPatch {status:Some("paused".into()),..Default::default()}).unwrap();
+    let t=h.app.store.create_forum(NewForum {topic:"Plan".into(),participants:vec![a.id.clone(),b.id.clone()],project_id:Some(p.id.clone()),..Default::default()}).unwrap();
+    let plan=json!({"work":[
+        {"title":"Page","owner_id":a.id,"depends_on":["Text","Design"]},
+        {"title":"Text","owner_id":a.id},
+        {"title":"Design","owner_id":b.id}
+    ]});
+    h.app.store.set_forum_meta(&t.id,&json!({"status":"concluded","plan":plan})).unwrap();
+    let path=format!("/api/forums/{}/apply",t.id);
+    let (first,second)=tokio::join!(post(&c,&base,&path,json!({})),post(&c,&base,&path,json!({})));
+    assert!(matches!((first.0,second.0),(200,409)|(409,200)));
+    let tasks=h.app.store.list_obligations(None,Some(&p.id),false).unwrap();
+    assert_eq!(tasks.len(),3);
+    assert_eq!(tasks.iter().find(|o|o.title=="Page").unwrap().dependencies.len(),2);
+    let bad=h.app.store.create_forum(NewForum {topic:"Bad plan".into(),participants:vec![a.id.clone(),b.id.clone()],project_id:Some(p.id.clone()),..Default::default()}).unwrap();
+    h.app.store.set_forum_meta(&bad.id,&json!({"status":"concluded","plan":{"work":[{"title":"A","owner_id":a.id,"depends_on":["B"]},{"title":"B","owner_id":b.id,"depends_on":["A"]}]}})).unwrap();
+    assert_eq!(post(&c,&base,&format!("/api/forums/{}/apply",bad.id),json!({})).await.0,409);
+    assert_eq!(h.app.store.list_obligations(None,Some(&p.id),false).unwrap().len(),3);
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn project_chat_reuse_workspace_and_context_controls() {
+    let (h,c,base)=boot().await;
+    let (_,p)=post(&c,&base,"/api/projects",json!({"name":"Long project"})).await;
+    let pid=p["id"].as_str().unwrap();
+    let (_,t)=post(&c,&base,"/api/threads",json!({"project_id":pid,"reuse_project":true})).await;
+    let (_,again)=post(&c,&base,"/api/threads",json!({"project_id":pid,"reuse_project":true})).await;
+    assert_eq!(again["id"],t["id"]);
+    let tid=t["id"].as_str().unwrap();
+    let endpoint=format!("/api/threads/{tid}/workspace");
+    let (status,_)=post(&c,&base,&endpoint,json!({"path":"relative"})).await;
+    assert_eq!(status,400);
+    let (status,bound)=post(&c,&base,&endpoint,json!({"path":h.app.cfg.data_dir.to_string_lossy(),"machine":""})).await;
+    assert_eq!(status,200,"{bound}");
+    assert_eq!(bound["status"],"bound");
+    let path=format!("/api/threads/{tid}/context");
+    let (status,ctx)=post(&c,&base,&path,json!({"auto":false})).await;
+    assert_eq!(status,200); assert_eq!(ctx["auto"],false);
+    assert_eq!(get(&c,&base,&path).await["auto"],false);
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn compact_completion_resets_session_but_cancellation_preserves_it() {
+    use senate_core::{model::*,store::ThreadPatch};
+    let (h,c,base)=boot().await;
+    for (backend,success) in [("mock",true),("mock",false)] {
+        let a=h.app.store.create_agent(NewAgent{name:format!("Compact {backend} {success}"),model_pref:backend.into(),..Default::default()}).unwrap();
+        let t=h.app.store.create_thread(NewThread{agent_id:Some(a.id.clone()),..Default::default()}).unwrap();
+        h.app.store.patch_thread(&t.id,ThreadPatch{mode:Some("auto".into()),..Default::default()}).unwrap();
+        h.app.store.set_cli_session_for(&t.id,backend,&a.id,"previous-context").unwrap();
+        let original=h.app.store.post_message(&t.id,"agent",Some(&a.id),"Original history",json!({"work":{"context_tokens":90,"context_window":100}}),MessageStatus::Done,None).unwrap();
+        let (_,queued)=post(&c,&base,&format!("/api/threads/{}/context",t.id),json!({"compact":true})).await;
+        assert_eq!(queued["pending"],1);
+        let messages=format!("/api/threads/{}/messages",t.id);
+        let waiting=until(&c,&base,&messages,|v|v["messages"].as_array().unwrap().iter().any(|m|m["props"]["compact"]==true && m["props"]["ask"]["state"]=="pending")).await;
+        let summary=waiting["messages"].as_array().unwrap().iter().find(|m|m["props"]["compact"]==true).unwrap();
+        let mid=summary["id"].as_str().unwrap();
+        let action=if success {"answer"} else {"cancel"};
+        post(&c,&base,&format!("/api/messages/{mid}/{action}"),json!({"decision":"allow"})).await;
+        until(&c,&base,&messages,|v|v["messages"].as_array().unwrap().iter().any(|m|m["id"]==mid && m["status"]==if success {"done"} else {"cancelled"})).await;
+        let current=h.app.store.get_thread(&t.id).unwrap();
+        assert_eq!(senate_core::Store::compact_summary(&current,&a.id).is_some(),success);
+        assert_eq!(h.app.store.cli_session_for(&current,backend,&a.id).is_none(),success);
+        assert_eq!(h.app.store.get_message(&original.id).unwrap().body,"Original history");
+    }
     h.stop().await;
 }

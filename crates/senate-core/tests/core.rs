@@ -886,7 +886,7 @@ fn a_chat_imports_additively_and_repeatably() {
 }
 
 #[test]
-fn a_note_reaches_a_colleague_and_the_sender_sees_it_read() {
+fn a_note_reaches_a_colleague_and_delivery_is_not_acknowledgement() {
     let (st, dev, arch, p) = setup();
     let t = st.create_thread(NewThread { project_id: Some(p.id.clone()), agent_id: Some(dev.id.clone()), ..Default::default() }).unwrap();
     let ctx = ToolCtx { agent_id: dev.id.clone(), thread_id: Some(t.id.clone()), project_id: Some(p.id.clone()), ..Default::default() };
@@ -898,17 +898,21 @@ fn a_note_reaches_a_colleague_and_the_sender_sees_it_read() {
     assert!(woke[0].prompt.contains("tauri dev"), "the note's text is in the turn's task");
     // a second note while that turn waits does not start another one
     let again = tools::call(&st, &ctx, "senate_message_colleague", &json!({"to": arch.slug, "text": "И ещё: порт 3012"})).unwrap();
-    assert_eq!(again["status"], "delivered_now");
+    assert_eq!(again["status"], "queued_for_delivery");
     // the architect sees it once
     let actx = ToolCtx { agent_id: arch.id.clone(), ..Default::default() };
-    // what is left unread is only the note that came while that turn waited
+    // urgent notes remain visible until explicitly acknowledged
+    let urgent = tools::call(&st, &actx, "senate_inbox", &json!({})).unwrap();
+    assert_eq!(urgent["new"].as_array().unwrap().len(), 2);
+    tools::call(&st, &actx, "senate_acknowledge_note", &json!({"id": r["note_id"]})).unwrap();
     let inbox = tools::call(&st, &actx, "senate_inbox", &json!({})).unwrap();
-    assert_eq!(inbox["new"].as_array().unwrap().len(), 1);
-    assert!(inbox["new"][0]["text"].as_str().unwrap().contains("3012"));
+    assert!(inbox["new"].as_array().unwrap().is_empty());
+    assert!(urgent["new"].as_array().unwrap().iter().any(|n| n["text"].as_str().unwrap().contains("3012")));
     assert!(tools::call(&st, &actx, "senate_inbox", &json!({})).unwrap()["new"].as_array().unwrap().is_empty());
     // and the developer sees that it was read
     let mine = tools::call(&st, &ctx, "senate_inbox", &json!({})).unwrap();
-    assert_eq!(mine["sent"][0]["read"], true);
+    assert_eq!(mine["sent"][0]["delivered"], true);
+    assert!(mine["sent"].as_array().unwrap().iter().any(|n| n["id"] == r["note_id"] && n["acknowledged"] == true));
     // nobody, an empty note, or oneself: refused plainly
     assert!(tools::call(&st, &ctx, "senate_message_colleague", &json!({"to": "nobody", "text": "x"})).is_err());
     assert!(tools::call(&st, &ctx, "senate_message_colleague", &json!({"to": arch.slug, "text": " "})).is_err());

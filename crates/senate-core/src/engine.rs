@@ -28,13 +28,14 @@ pub struct TransitionArgs {
     pub outcome: Option<String>,
     pub next_step: Option<String>,
     pub note: String,
+    pub evidence: Option<String>,
 }
 
 fn allowed(from: ObligationState, to: ObligationState) -> bool {
     use ObligationState::*;
     matches!(
         (from, to),
-        (Accepted, Running | Waiting | Blocked | Cancelled | Done)
+        (Accepted, Running | Waiting | Blocked | Cancelled | Review | Done)
             | (Running, Accepted | Waiting | Blocked | Review | Done | Cancelled)
             | (Waiting, Accepted | Running | Blocked | Cancelled)
             | (Blocked, Accepted | Waiting | Cancelled)
@@ -53,6 +54,7 @@ pub struct ScheduleOutcome {
 pub struct ChatSend {
     pub thread_id: String,
     pub text: String,
+    pub client_id: Option<String>,
     #[serde(default)]
     pub attachments: Vec<serde_json::Value>,
     #[serde(default)]
@@ -82,16 +84,48 @@ impl Store {
         if !allowed(cur.state, to) {
             return Err(Error::Transition(format!("{} → {}", cur.state.as_str(), to.as_str())));
         }
+        if matches!(to, ObligationState::Running | ObligationState::Done | ObligationState::Review) {
+            for dep in &cur.dependencies {
+                if self.get_obligation(dep)?.state != ObligationState::Done {
+                    return Err(Error::invalid("сначала должны завершиться все зависимости"));
+                }
+            }
+        }
+        let is_reviewer = cur.reviewer_id.as_deref() == Some(actor);
+        if cur.state == ObligationState::Review && matches!(to, ObligationState::Done | ObligationState::Accepted) {
+            if cur.owner_id.as_deref() == Some(actor) || (cur.reviewer_id.is_some() && !is_reviewer && actor != "user") {
+                return Err(Error::invalid("результат принимает проверяющий или человек, не исполнитель"));
+            }
+            if to == ObligationState::Accepted && args.note.trim().is_empty() {
+                return Err(Error::invalid("для возврата на доработку укажите замечания"));
+            }
+            if is_reviewer && to == ObligationState::Done && args.evidence.as_deref().unwrap_or("").trim().is_empty() {
+                return Err(Error::invalid("проверяющий должен приложить основания проверки"));
+            }
+        }
+        if to == ObligationState::Done && cur.reviewer_id.is_some() && cur.state != ObligationState::Review {
+            return Err(Error::invalid("сначала передайте результат на проверку"));
+        }
+        if to == ObligationState::Review && cur.reviewer_id.is_some() && args.evidence.as_deref().unwrap_or(&cur.evidence).trim().is_empty() {
+            return Err(Error::invalid("приложите основания результата: файлы, проверки или источники"));
+        }
+        let mut dependencies = None;
         let mut wait = None;
         let mut blocker = String::new();
         let mut outcome = args.outcome.clone();
         match to {
             ObligationState::Waiting => {
                 let w = args.wait.clone().ok_or_else(|| Error::invalid("ожидание требует условия продолжения"))?;
-                if let WaitCondition::Obligation { id: dep } = &w {
-                    if dep == id || self.wait_would_cycle(id, dep)? {
-                        return Err(Error::invalid("круговая зависимость между задачами"));
-                    }
+                let deps = match &w {
+                    WaitCondition::Obligation { id } => vec![id.clone()],
+                    WaitCondition::Obligations { ids } => ids.clone(),
+                    _ => vec![],
+                };
+                if !deps.is_empty() {
+                    let mut all = cur.dependencies.clone();
+                    all.extend(deps);
+                    all.sort(); all.dedup();
+                    dependencies = Some(all);
                 }
                 wait = Some(w);
             }
@@ -99,6 +133,11 @@ impl Store {
                 blocker = args.blocker.clone().unwrap_or_default();
                 if blocker.trim().is_empty() {
                     return Err(Error::invalid("укажите препятствие и какое вмешательство требуется"));
+                }
+            }
+            ObligationState::Review => {
+                if outcome.as_deref().unwrap_or(&cur.outcome).trim().is_empty() {
+                    return Err(Error::invalid("перед проверкой опишите результат"));
                 }
             }
             ObligationState::Done => {
@@ -134,27 +173,11 @@ impl Store {
             }
             _ => {}
         }
-        self.write_obligation_state(id, to, wait.as_ref(), &blocker, outcome.as_deref(), args.next_step.as_deref(), actor, &args.note)
-    }
-
-    fn wait_would_cycle(&self, start: &str, dep: &str) -> Result<bool> {
-        let mut cur = dep.to_string();
-        for _ in 0..64 {
-            let o = match self.get_obligation(&cur) {
-                Ok(o) => o,
-                Err(_) => return Ok(false),
-            };
-            match o.wait_condition {
-                Some(WaitCondition::Obligation { id: next }) if o.state == ObligationState::Waiting => {
-                    if next == start {
-                        return Ok(true);
-                    }
-                    cur = next;
-                }
-                _ => return Ok(false),
-            }
-        }
-        Ok(true)
+        let evidence = if cur.state == ObligationState::Review && to == ObligationState::Accepted {
+            outcome = Some(String::new());
+            Some(String::new())
+        } else { args.evidence.clone() };
+        self.write_obligation_state(&cur, to, wait.as_ref(), &blocker, outcome.as_deref(), args.next_step.as_deref(), evidence.as_deref(), dependencies.as_deref(), actor, &args.note)
     }
 
     /// The user answered something an obligation was waiting for.
@@ -200,6 +223,22 @@ impl Store {
         let mut woken = vec![];
         for o in waiting {
             let Some(cond) = &o.wait_condition else { continue };
+            let deps = &o.dependencies;
+            let mut pending = false;
+            let mut failed = None;
+            for id in deps {
+                match self.get_obligation(id) {
+                    Ok(dep) if dep.state == ObligationState::Done => {},
+                    Ok(dep) if dep.state == ObligationState::Cancelled => { failed = Some(format!("зависимость отменена: {}. Пересмотрите зависимости задачи", dep.title)); break; },
+                    Err(_) => { failed = Some(format!("зависимость недоступна: {id}")); break; },
+                    _ => pending = true,
+                }
+            }
+            if let Some(reason) = failed {
+                self.transition(&o.id, ObligationState::Blocked, TransitionArgs { blocker: Some(reason), ..Default::default() }, "system")?;
+                continue;
+            }
+            if pending { continue; }
             let met = {
                 let c = self.lock();
                 match cond {
@@ -216,8 +255,9 @@ impl Store {
                         let st: Option<String> = c
                             .query_row("SELECT state FROM obligations WHERE id=?", [id], |r| r.get(0))
                             .ok();
-                        matches!(st.as_deref(), Some("done") | Some("cancelled") | None)
+                        matches!(st.as_deref(), Some("done"))
                     }
+                    WaitCondition::Obligations { .. } => true,
                     WaitCondition::User => {
                         let n: i64 = c.query_row(
                             "SELECT COUNT(*) FROM events WHERE kind='user.answered' AND subject_id=? AND ts>=?",
@@ -258,10 +298,17 @@ impl Store {
         let ready: Vec<Obligation> = self
             .list_obligations(None, None, true)?
             .into_iter()
-            .filter(|o| o.state == ObligationState::Accepted && o.owner_id.is_some())
+            .filter(|o| (o.state == ObligationState::Accepted && o.owner_id.is_some()) || (o.state == ObligationState::Review && o.reviewer_id.is_some()))
             .collect();
         for o in ready {
-            let owner = self.get_agent(o.owner_id.as_deref().unwrap())?;
+            let reviewing = o.state == ObligationState::Review;
+            let review_reason = format!("review:{}", o.updated_at);
+            if reviewing && self.list_sessions(None, Some(&o.id), None, 100)?.iter().any(|s| s.reason == review_reason) { continue; }
+            if !reviewing && !o.dependencies.is_empty() && o.dependencies.iter().any(|id| self.get_obligation(id).map(|d| d.state != ObligationState::Done).unwrap_or(true)) {
+                self.transition(&o.id, ObligationState::Waiting, TransitionArgs { wait: Some(WaitCondition::Obligations { ids: o.dependencies.clone() }), ..Default::default() }, "system")?;
+                continue;
+            }
+            let owner = self.get_agent(if reviewing { o.reviewer_id.as_deref().unwrap() } else { o.owner_id.as_deref().unwrap() })?;
             if owner.status != "active" {
                 continue;
             }
@@ -271,6 +318,7 @@ impl Store {
                 }
             }
             if o.budget_tokens > 0 && o.spent_tokens >= o.budget_tokens {
+                if reviewing { continue; } // remains visible for the person's review
                 self.transition(
                     &o.id,
                     ObligationState::Blocked,
@@ -289,11 +337,11 @@ impl Store {
                 continue;
             }
             let backend = if owner.model_pref.is_empty() { default_backend.to_string() } else { owner.model_pref.clone() };
-            let reason = match self.events(Some("obligation"), Some(&o.id), 1)?.first() {
+            let reason = if reviewing { review_reason } else { match self.events(Some("obligation"), Some(&o.id), 1)?.first() {
                 Some(e) if e.kind == "obligation.created" => "принята новая задача".to_string(),
                 Some(e) => format!("продолжение работы: {}", e.kind),
                 None => "продолжение работы".to_string(),
-            };
+            }};
             let prompt = workset::build_obligation_prompt(self, &owner, &o, &reason)?;
             // The run streams into a chat of its own so the user can open it and watch the work.
             let thread = self.obligation_thread(&o, &owner)?;
@@ -371,6 +419,7 @@ impl Store {
     pub fn send_chat(&self, req: ChatSend, default_backend: &str) -> Result<Dispatched> {
         let thread = self.get_thread(&req.thread_id)?;
         let mut props = serde_json::json!({});
+        if let Some(id) = &req.client_id { props["client_id"] = serde_json::json!(id); }
         if !req.attachments.is_empty() {
             props["attachments"] = serde_json::json!(req.attachments);
         }
@@ -503,6 +552,16 @@ impl Store {
         for agent in targets {
             // Everyone works on their own model, whichever chat they are in and whoever called them.
             let backend = if !agent.model_pref.is_empty() { agent.model_pref.clone() } else { default_backend.to_string() };
+            if let Some(extra) = &compact {
+                if let Some(run) = self.queue_chat_compact(&thread.id,&agent.id,&backend,extra,false)? {
+                    if let Some(mid) = &run.message_id {
+                        let m = self.update_message(mid,None,Some(&serde_json::json!({"request_message_id":d.user_message.id})),None)?;
+                        d.agent_messages.push(m);
+                    }
+                    d.sessions.push(run);
+                }
+                continue;
+            }
             let mut prompt = match &compact {
                 Some(extra) => workset::compact_prompt(extra),
                 None => workset::chat_turn_prompt(self, &agent, &thread, &req.text)?,
@@ -518,7 +577,7 @@ impl Store {
                 "agent",
                 Some(&agent.id),
                 "",
-                serde_json::json!({"backend": backend, "effort": thread.effort, "phase": "в очереди", "steps": [], "compact": compact.is_some()}),
+                serde_json::json!({"backend": backend, "effort": thread.effort, "phase": "в очереди", "steps": [], "compact": compact.is_some(), "request_message_id": d.user_message.id}),
                 MessageStatus::Queued,
                 None,
             )?;
@@ -578,6 +637,7 @@ impl Store {
             caller.name, caller.slug, request.trim()
         );
         let mut prompt = workset::chat_turn_prompt(self, &target, &thread, &asked)?;
+        prompt += &workset::handoff_context(self, &thread, &caller.id)?;
         prompt += &workset::attachments_block(&[]);
         let msg = self.post_message(
             &thread.id,

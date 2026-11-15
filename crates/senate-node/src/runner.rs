@@ -17,6 +17,7 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot, watch, Notify};
+use futures_util::{stream, StreamExt};
 
 // ---------------------------------------------------------------- wire format
 
@@ -172,6 +173,11 @@ impl Hub {
         self.mark(machine);
         let until = Instant::now() + Duration::from_secs(25);
         loop {
+            // Subscribe before checking the queue: notify_waiters does not retain a permit.
+            // Otherwise a job arriving between take_for and notified waits for the fallback tick.
+            let notified = self.notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
             if let Some(j) = self.take_for(machine) {
                 return Some(j);
             }
@@ -179,7 +185,7 @@ impl Hub {
             if left.is_zero() {
                 return None;
             }
-            let _ = tokio::time::timeout(left.min(Duration::from_secs(5)), self.notify.notified()).await;
+            let _ = tokio::time::timeout(left.min(Duration::from_secs(5)), notified).await;
             self.mark(machine);
         }
     }
@@ -618,25 +624,25 @@ async fn handle_job(hub: String, token: String, data_dir: PathBuf, job: Value) {
 async fn pull_workspaces(http: &reqwest::Client, hub: &str, token: &str, ws_root: &Path) -> usize {
     let Ok(r) = http.get(format!("{hub}/api/runner/workspaces")).bearer_auth(token).timeout(Duration::from_secs(30)).send().await else { return 0 };
     let Ok(v) = r.json::<Value>().await else { return 0 };
-    let mut n = 0;
-    for f in v["files"].as_array().cloned().unwrap_or_default() {
+    let files = v["files"].as_array().cloned().unwrap_or_default();
+    stream::iter(files.into_iter().map(|f| async move {
         let rel = f["path"].as_str().unwrap_or("");
-        let Some(local) = crate::workspace::sync_path(ws_root, rel) else { continue };
+        let Some(local) = crate::workspace::sync_path(ws_root, rel) else { return 0usize };
         let (size, mtime) = (f["size"].as_u64().unwrap_or(0), f["mtime"].as_i64().unwrap_or(0));
         if !crate::workspace::needs_update(&local, size, mtime) {
-            continue;
+            return 0;
         }
-        let Ok(resp) = http.get(format!("{hub}/api/runner/workspaces/file")).query(&[("path", rel)]).bearer_auth(token).timeout(Duration::from_secs(120)).send().await else { continue };
+        let Ok(resp) = http.get(format!("{hub}/api/runner/workspaces/file")).query(&[("path", rel)]).bearer_auth(token).timeout(Duration::from_secs(120)).send().await else { return 0 };
         if !resp.status().is_success() {
-            continue;
+            return 0;
         }
         if let Ok(bytes) = resp.bytes().await {
             if crate::workspace::write_synced(&local, &bytes, mtime).is_ok() {
-                n += 1;
+                return 1;
             }
         }
-    }
-    n
+        0
+    })).buffer_unordered(4).fold(0, |n, written| async move { n + written }).await
 }
 
 /// After a turn: what changed in the specialist's own folder since it started goes back to the node.
@@ -662,6 +668,18 @@ async fn push_workspace(http: &reqwest::Client, hub: &str, token: &str, ws_root:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn waiting_runner_is_woken_immediately_for_its_job() {
+        let hub = Arc::new(Hub::default());
+        let h = hub.clone();
+        let poll = tokio::spawn(async move { h.poll("office").await });
+        tokio::task::yield_now().await;
+        hub.queue.lock().unwrap().push_back(json!({"id": "fast", "machine": "office"}));
+        hub.notify.notify_waiters();
+        let job = tokio::time::timeout(Duration::from_millis(500), poll).await.expect("no fallback polling delay").unwrap().unwrap();
+        assert_eq!(job["id"], "fast");
+    }
 
     #[tokio::test]
     async fn work_goes_to_the_computer_it_is_addressed_to() {

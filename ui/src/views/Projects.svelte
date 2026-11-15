@@ -1,8 +1,10 @@
 <script lang="ts">
+  import TeamWork from '../components/TeamWork.svelte';
+  import { coalescedRefresh } from '../lib/refresh';
   import Spinner from '../components/Spinner.svelte';
   import Dropdown from '../components/Dropdown.svelte';
   import { get, patch, post, put } from '../lib/api';
-  import { app, go } from '../lib/store.svelte';
+  import { app, go, onEvent } from '../lib/store.svelte';
   import { MODE_LABEL, N, STATE_LABEL, count, timeAgo } from '../lib/format';
   import type { Agent, Decision, Obligation, Project, Thread } from '../lib/types';
   import Avatar from '../components/Avatar.svelte';
@@ -30,11 +32,14 @@
   let f = $state({ goal: '', criteria: '', constraints: '' });
   let newDecision = $state('');
 
-  async function load() {
+  async function load(refreshOnly = false) {
     if (!id) return (d = null);
     try {
-      d = await get(`/api/projects/${id}`);
-      f = { goal: d!.project.goal, criteria: d!.project.criteria, constraints: d!.project.constraints };
+      const requested = id;
+      const result = await get<typeof d>(`/api/projects/${requested}`);
+      if (id !== requested) return;
+      d = result;
+      if (!refreshOnly) f = { goal: d!.project.goal, criteria: d!.project.criteria, constraints: d!.project.constraints };
     } catch (e: any) {
       error = e.message;
     }
@@ -42,6 +47,8 @@
   $effect(() => {
     id;
     load();
+    const refresh = coalescedRefresh(() => load(true), 250);
+    return onEvent((type) => { if (['attention', 'session', 'thread'].includes(type)) refresh(); });
   });
 
   async function create() {
@@ -132,6 +139,8 @@
     {#snippet actions()}
       <button class="btn primary" onclick={() => go({ kind: 'new', project: id })}><Icon name="chat" size={14} />Новый чат</button>
     {/snippet}
+    {#if d.project.root_path}<p class="muted">Общая папка: специалисты работают по очереди, чтобы не перезаписывать изменения друг друга.</p>{/if}
+    <TeamWork obligations={d.obligations} members={d.members} />
     <div class="split">
       <div>
         <div class="section">
