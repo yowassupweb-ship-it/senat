@@ -165,7 +165,7 @@
       </div>
     {:else}
     <div class="head">
-      <Avatar name={agent?.name} color={agent?.accent} size={22} />
+      <Avatar name={agent?.name} color={agent?.accent} size={22} live={m.status === 'working'} />
       <b>{agent?.name ?? 'Специалист'}</b>
       {#if roleLabel(agent)}<span class="faint">{roleLabel(agent)}</span>{/if}
       {#if p.asked_by}<span class="chip accent" title={p.request}><Icon name="users" size={11} />отвечает {agentById(p.asked_by)?.name ?? 'коллеге'}</span>{/if}

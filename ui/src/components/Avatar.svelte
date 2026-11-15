@@ -2,7 +2,7 @@
   import { app } from '../lib/store.svelte';
   import { fileUrl } from '../lib/api';
 
-  let { name = '', color = '', size = 24, src, progress, gender }: { name?: string; color?: string; size?: number; src?: string; progress?: number; gender?: string } = $props();
+  let { name = '', color = '', size = 24, src, progress, gender, live = false }: { name?: string; color?: string; size?: number; src?: string; progress?: number; gender?: string; live?: boolean } = $props();
 
   // A specialist has a colour of their own, worn quietly: it tints the disc and its edge, while the initial and
   // every label around it stay in the interface's own ink. Identity without a carnival.
@@ -10,7 +10,9 @@
   const photo = $derived(src ?? agent?.avatar ?? '');
   const sex = $derived(gender ?? agent?.gender ?? '');
   const genderLabel = $derived(sex === 'm' ? 'Мужской пол' : sex === 'f' ? 'Женский пол' : '');
-  const working = $derived(!!agent && app.live.some((r) => r.agent_id === agent.id && r.status === 'running'));
+  // The ring turns only where the caller says so: on the one reply that is being written now. It used to turn on
+  // every avatar of a working specialist, so one run lit up three or four identical discs on the screen.
+  const working = $derived(live);
   let broken = $state(false);
   $effect(() => {
     photo;
