@@ -16,6 +16,7 @@
   import MessageView from './Message.svelte';
   import UsageRings from './UsageRings.svelte';
   import Outbox from './Outbox.svelte';
+  import SqueezeCard from './SqueezeCard.svelte';
   import { enqueue, initOutbox } from '../lib/outbox.svelte';
   import type { Uploaded } from '../lib/api';
 
@@ -41,7 +42,7 @@
     }
     return out;
   }
-  type Item = { kind: 'msg'; m: Message; at: number } | { kind: 'post'; p: Post; at: number };
+  type Item = { kind: 'msg'; m: Message; at: number } | { kind: 'squeeze'; ms: Message[]; at: number } | { kind: 'post'; p: Post; at: number };
   const flow = $derived.by(() => {
     const byId = new Map(messages.map((m) => [m.id, m]));
     const taken = new Set<string>();
@@ -89,6 +90,14 @@
         continue;
       }
       if (m.author_kind === 'user') open = null;
+      // compactions made together are one card; the node's own "Контекст сжат" line is replaced by it
+      if (m.author_kind === 'system' && /^Контекст сжат/.test(m.body)) continue;
+      if (m.author_kind === 'agent' && P(m).compact) {
+        const last = items[items.length - 1];
+        if (last?.kind === 'squeeze') last.ms.push(m);
+        else items.push({ kind: 'squeeze', ms: [m], at: m.created_at });
+        continue;
+      }
       items.push({ kind: 'msg', m, at: m.created_at });
     }
     for (const it of items) {
@@ -476,8 +485,10 @@
           {#if loading}
             <Spinner size={24} fill />
           {/if}
-          {#each flow as it (it.kind === 'msg' ? it.m.id : 'p' + it.p.key)}
-            {#if it.kind === 'msg'}
+          {#each flow as it (it.kind === 'msg' ? it.m.id : it.kind === 'squeeze' ? 's' + it.ms[0].id : 'p' + it.p.key)}
+            {#if it.kind === 'squeeze'}
+              <SqueezeCard items={it.ms} onstop={stop} />
+            {:else if it.kind === 'msg'}
               <MessageView m={it.m} onanswer={answer} onstop={stop} onretry={retry} onimage={(a) => (lightbox = a)} onreply={isForum ? undefined : reply} />
             {:else}
               {@const who = agentById(it.p.author)}
