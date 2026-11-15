@@ -446,6 +446,7 @@
       {/if}
       {#if !isForum}<span class="chip" title={MODE_LABEL[effMode]?.hint}><Icon name="shield" size={12} />{MODE_LABEL[effMode]?.label}</span>{/if}
       <span class="grow"></span>
+      {#if threadId && !isForum}{#key threadId}<ContextBar {threadId} />{/key}{/if}
       <UsageRings />
       {#if isForum && (meta.status === 'open' || meta.status === 'summarizing')}
         <button class="btn sm" onclick={() => forumAct('conclude')}>Подвести итог</button>
@@ -461,7 +462,6 @@
         {#if thread.kind !== 'lounge'}<button class="icon-btn" onclick={archive} aria-label="В архив" title="В архив"><Icon name="archive" size={15} /></button>{/if}
       {/if}
     </header>
-    {#if threadId && !isForum}{#key threadId}<ContextBar {threadId} />{/key}{/if}
 
     {#if !threadId}
       <div class="empty">
