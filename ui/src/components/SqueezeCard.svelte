@@ -26,7 +26,7 @@
   <div class="top">
     <span class="lead" aria-hidden="true">{#if working}<span class="loader"></span>{:else}<Icon name={failed && !done ? 'alert' : 'check'} size={14} />{/if}</span>
     <b>{title}</b>
-    <span class="sum">{#if working}{done + failed} из {items.length}{:else if failed}{done} из {items.length}, {failed} не вышло{:else if items.length > 1}{items.length} участников{/if}</span>
+    <span class="sum">{#if working}{done + failed} из {items.length}{:else if failed || done < items.length}{done} из {items.length}{#if failed}, {failed} не вышло{/if}{:else if items.length > 1}{items.length} участников{/if}</span>
   </div>
   <ul>
     {#each items as m (m.id)}
@@ -38,6 +38,7 @@
           {#if m.status === 'queued'}в очереди
           {:else if m.status === 'working'}<span class="loader sm"></span>{sec(m)} с
           {:else if m.status === 'failed'}не вышло, контекст сохранён
+          {:else if m.status === 'cancelled'}остановлено
           {:else}<Icon name="check" size={12} />продолжит со сводкой{/if}
         </span>
         {#if m.status === 'done' && m.body}<button class="more" aria-expanded={open === m.id} onclick={() => (open = open === m.id ? null : m.id)}>{open === m.id ? 'Скрыть' : 'Сводка'}</button>{/if}
@@ -49,7 +50,7 @@
 </div>
 
 <style>
-  .squeeze { width: fit-content; min-width: 18rem; max-width: min(100%, 34rem); margin: 8px 0; padding: 8px 12px 6px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg-raised); font-size: 12px; }
+  .squeeze { width: fit-content; min-width: 18rem; max-width: min(100%, 34rem); margin: 8px auto; padding: 8px 12px 6px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg-raised); font-size: 12px; }
   .squeeze.bad { background: var(--bad-soft); }
   .top { display: flex; align-items: center; gap: 8px; padding-bottom: 6px; font-size: 13px; }
   .top b { font-weight: 600; }

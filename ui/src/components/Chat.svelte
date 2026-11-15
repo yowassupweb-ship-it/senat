@@ -210,6 +210,8 @@
   let dockH = $state(0);
   /** Discussions the person folded to one line, by post key. */
   let folded = $state<Record<string, boolean>>({});
+  // the answers the convener already folded into the decision: collapsed, the person has read them as they came
+  let answersOpen = $state<Record<string, boolean>>({});
   /** An opinion being written for a council, by post key (absent: the form is closed). */
   let speak = $state<Record<string, string>>({});
   let speaking = $state('');
@@ -525,11 +527,23 @@
                   </div>
                 {/if}
                 {#if it.p.comments.length}
-                  <div class="comments" role="group" aria-label="Ответы и реплики">
-                    {#each it.p.comments as c (c.id)}
-                      <MessageView m={c} nested onanswer={answer} onstop={stop} onretry={retry} onimage={(a) => (lightbox = a)} />
-                    {/each}
-                  </div>
+                  {@const openA = !!answersOpen[it.p.key]}
+                  {@const writing = it.p.comments.filter((c) => c.status === 'working' || c.status === 'queued').length}
+                  {@const people = [...new Set(it.p.comments.map((c) => c.author_id))]}
+                  <button class="answers-toggle" onclick={() => (answersOpen[it.p.key] = !openA)} aria-expanded={openA}>
+                    <span class="chev" class:open={openA}><Icon name="right" size={11} /></span>
+                    <span>Ответы участников</span>
+                    <span class="count">{it.p.comments.length}</span>
+                    <span class="faces" aria-hidden="true">{#each people.slice(0, 5) as id (id)}{@const pa = agentById(id)}<Avatar name={pa?.name} color={pa?.accent} size={16} />{/each}</span>
+                    {#if writing}<span class="faint">ещё пишут: {writing}</span>{/if}
+                  </button>
+                  {#if openA}
+                    <div class="comments" role="group" aria-label="Ответы и реплики">
+                      {#each it.p.comments as c (c.id)}
+                        <MessageView m={c} nested onanswer={answer} onstop={stop} onretry={retry} onimage={(a) => (lightbox = a)} />
+                      {/each}
+                    </div>
+                  {/if}
                 {/if}
                 {#if speak[it.p.key] !== undefined}
                   <form class="opinion" onsubmit={(e) => { e.preventDefault(); sendOpinion(it.p, members); }}>
@@ -745,6 +759,14 @@
     font-weight: 600;
     color: var(--fg-2);
   }
+  .answers-toggle { display: flex; align-items: center; gap: 6px; margin: 4px 0 6px 30px; min-height: 24px; color: var(--fg-2); font-size: 12px; font-weight: 600; border-radius: var(--radius-s); }
+  .answers-toggle:hover { color: var(--fg); }
+  .answers-toggle .chev { display: inline-flex; color: var(--fg-3); transition: transform .15s var(--ease); }
+  .answers-toggle .chev.open { transform: rotate(90deg); }
+  .answers-toggle .count { min-width: 18px; padding: 0 6px; border-radius: 9px; background: var(--bg-active); font-size: 11px; line-height: 18px; text-align: center; font-variant-numeric: tabular-nums; }
+  .answers-toggle .faces { display: inline-flex; margin-left: 2px; }
+  .answers-toggle .faces > :global(*) + :global(*) { margin-left: -5px; }
+  .answers-toggle .faint { font-weight: 400; }
   .verdict-line {
     display: block;
     width: calc(100% - 30px);
