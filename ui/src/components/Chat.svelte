@@ -17,7 +17,6 @@
   import UsageRings from './UsageRings.svelte';
   import Outbox from './Outbox.svelte';
   import SqueezeCard from './SqueezeCard.svelte';
-  import CouncilHall from './CouncilHall.svelte';
   import { enqueue, initOutbox } from '../lib/outbox.svelte';
   import type { Uploaded } from '../lib/api';
 
@@ -505,7 +504,22 @@
               {@const stateOf = (id: string) => { const c = it.p.comments.find((x) => x.author_id === id && x.props.asked_by); return !c ? 'wait' : c.status === 'failed' ? 'bad' : c.status === 'done' ? 'ok' : 'live'; }}
               {@const stillWorking = !it.p.decision && (done < called || it.p.comments.some((c) => c.status === 'working' || c.status === 'queued'))}
               <section class="post" class:shut aria-label="Заседание совета">
-                <CouncilHall who={it.p.author ?? ""} {members} {stateOf} working={stillWorking} {done} {called} decided={!!it.p.decision} {verdict} time={new Date(it.p.calls[0].created_at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })} {shut} ontoggle={() => (folded[it.p.key] = !shut)} />
+                <button class="ph" onclick={() => (folded[it.p.key] = !shut)} aria-expanded={!shut} title={shut ? 'Развернуть' : 'Свернуть'}>
+                  <span class="chev" class:open={!shut}><Icon name="right" size={11} /></span>
+                  <Avatar name={who?.name} color={who?.accent} size={36} />
+                  <span class="ptitle"><b>{who?.name ?? 'Специалист'}</b> {called > 1 ? 'собрал совет' : 'позвал коллегу'}</span>
+                  <span class="faces" aria-hidden="true">
+                    {#each members as id (id)}
+                      {@const ma = agentById(id)}
+                      <span class="face {stateOf(id)}" title={`${ma?.name ?? 'Коллега'}`}><Avatar name={ma?.name} color={ma?.accent} size={34} /></span>
+                    {/each}
+                  </span>
+                  <span class="pstate" class:live={stillWorking}>{#if stillWorking}<span class="loader"></span>ответили {done} из {called}{:else if it.p.decision}<Icon name="check" size={12} />решение готово{:else}ответили {done} из {called}{/if}</span>
+                  <time class="faint">{new Date(it.p.calls[0].created_at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}</time>
+                </button>
+                {#if shut && verdict}
+                  <button class="verdict-line" onclick={() => (folded[it.p.key] = false)} title={verdict}><span class="vl">Решение</span>{verdict}</button>
+                {/if}
                 {#if !shut}
                 {#each asks as ask (ask.key)}
                   <p class="say">
@@ -676,9 +690,77 @@
   }
   /* a discussion: the calls as a post, the answers as comments under it */
   .post {
-    margin: 0;
+    margin: 10px 0 14px;
+    padding: 8px 16px 12px;
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    background: var(--bg-raised);
   }
-  .post:not(.shut) { margin-bottom: 8px; }
+  .post .ph { width: 100%; text-align: left; display: flex; align-items: center; gap: 12px; font-size: 14px; min-height: 52px; border-radius: var(--radius-s); }
+  .post .chev { display: inline-flex; color: var(--fg-3); transition: transform .15s var(--ease); }
+  .post .chev.open { transform: rotate(90deg); }
+  .ptitle { color: var(--fg-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  .ptitle b { color: var(--fg); font-weight: 600; }
+  .post .faces { display: inline-flex; align-items: center; gap: 10px; margin-left: 6px; }
+  .face { position: relative; display: inline-flex; border-radius: 50%; }
+  .face.wait { opacity: .45; }
+  .face.live::after { content: ''; position: absolute; inset: -2px; border-radius: 50%; border: 2px solid transparent; border-top-color: var(--fg-2); animation: sq-spin .9s linear infinite; }
+  .face.ok::after, .face.bad::after { content: ''; position: absolute; right: -3px; bottom: -3px; width: 11px; height: 11px; border-radius: 50%; box-shadow: 0 0 0 2px var(--bg-raised); background: var(--ok); }
+  .face.bad::after { background: var(--bad); }
+  .pstate { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; color: var(--fg-3); font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .pstate.live { color: var(--fg-2); }
+  .post .loader { width: 10px; height: 10px; border-radius: 50%; border: 1.5px solid var(--line-strong); border-top-color: var(--fg); animation: sq-spin .8s linear infinite; }
+  @keyframes sq-spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .face.live::after, .post .loader { animation-duration: 2.4s; } }
+  .ph {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 4px;
+  }
+.fold {
+    width: 22px;
+    height: 22px;
+    margin-left: -26px;
+    display: inline-grid;
+    place-items: center;
+    border-radius: 6px;
+    color: var(--fg-3);
+  }
+  .fold:hover {
+    background: var(--bg-hover);
+    color: var(--fg);
+  }
+  .fold:focus-visible {
+    outline: 2px solid var(--focus, var(--fg-2));
+    outline-offset: 1px;
+  }
+  .sum {
+    font-size: 12px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+  }
+  .ph b {
+    font-weight: 600;
+  }
+  .ph time {
+    margin-left: auto;
+    font-size: 12px;
+  }
+  .gather {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 0 7px;
+    height: 20px;
+    border-radius: 10px;
+    background: var(--bg-hover);
+    color: var(--fg-2);
+    font-size: 11.5px;
+    font-weight: 500;
+  }
   .say {
     margin: 0 0 6px 30px;
     white-space: pre-wrap;
@@ -711,6 +793,22 @@
   .answers-toggle .faces { display: inline-flex; margin-left: 2px; }
   .answers-toggle .faces > :global(*) + :global(*) { margin-left: -5px; }
   .answers-toggle .faint { font-weight: 400; }
+  .verdict-line {
+    display: block;
+    width: 100%;
+    margin: 2px 0 2px;
+    text-align: left;
+    font-size: 13px;
+    color: var(--fg);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .verdict-line .vl {
+    font-weight: 600;
+    color: var(--fg-2);
+    margin-right: 6px;
+  }
   .add-opinion {
     display: inline-flex;
     align-items: center;
@@ -726,6 +824,10 @@
     color: var(--fg);
   }
   .add-opinion:focus-visible,
+  .verdict-line:focus-visible {
+    outline: 2px solid var(--focus, var(--fg-2));
+    outline-offset: 1px;
+  }
   .opinion {
     margin: 4px 0 0 30px;
     display: flex;
