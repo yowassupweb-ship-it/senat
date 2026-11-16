@@ -11,6 +11,7 @@ mod permissions;
 mod skills;
 pub mod mcp;
 pub mod mcp_http;
+pub mod mcp_bridge;
 pub mod runner;
 pub mod s3;
 mod project_git;

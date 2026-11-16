@@ -72,6 +72,15 @@ fn link_state(link: State<'_, Link>, problem: State<'_, Problem>) -> tunnel::Lin
     }
 }
 
+/// Which computer this window is on (the id the runner reports to the node), so the screen can ask
+/// "is this project on this computer?" and offer its folders.
+#[tauri::command]
+fn this_machine() -> Option<serde_json::Value> {
+    let raw = std::fs::read_to_string(default_data_dir().join("machine.json")).ok()?;
+    let v: serde_json::Value = serde_json::from_str(raw.trim_start_matches('\u{feff}')).ok()?;
+    Some(serde_json::json!({"id": v["id"].as_str()?, "name": v["name"].as_str().unwrap_or("")}))
+}
+
 fn remote_name() -> Option<String> {
     let v = remote_json().ok()??;
     v["name"].as_str().map(str::to_string)
@@ -150,7 +159,7 @@ fn main() {
                 let _ = w.set_focus();
             }
         }))
-        .invoke_handler(tauri::generate_handler![open_url, link_state])
+        .invoke_handler(tauri::generate_handler![open_url, link_state, this_machine])
         .setup(|app| {
             let mut tunnel_up = None;
             let problem = remote_json().err();

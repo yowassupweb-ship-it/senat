@@ -113,6 +113,17 @@
     { kind: 'access', label: 'Доступы', icon: 'key', img: 'access' },
     { kind: 'settings', label: 'Настройки', icon: 'sliders' },
   ];
+  // The chats are what the person comes for: the sections used every day stay in sight, the rest wait behind
+  // "Ещё" (and show themselves while one of them is open).
+  const daily: View['kind'][] = ['agents', 'projects', 'obligations'];
+  const mainNav = nav.filter((n) => daily.includes(n.kind));
+  const restNav = nav.filter((n) => !daily.includes(n.kind));
+  let more = $state((() => { try { return localStorage.getItem('senate.navMore') === '1'; } catch { return false; } })());
+  const moreOpen = $derived(more || restNav.some((n) => isView(n.kind)));
+  function toggleMore() {
+    more = !moreOpen;
+    try { localStorage.setItem('senate.navMore', more ? '1' : '0'); } catch { /* remembered only when storage works */ }
+  }
 </script>
 
 {#snippet item(t: Thread, deep: boolean)}
@@ -190,12 +201,17 @@
   </div>
 
   <div class="foot">
-    {#each nav as n (n.kind)}
+    {#snippet navRow(n: (typeof nav)[number])}
       <button class="nav" class:on={isView(n.kind)} aria-current={isView(n.kind) ? "page" : undefined} onclick={() => go({ kind: n.kind } as View)}>
         <span class="ico">{#if n.img}<img class="nimg" src={`/icons/${n.img}.png`} width="17" height="17" alt="" />{:else}<Icon name={n.icon} size={13} />{/if}</span>{n.label}
         {#if n.kind === 'obligations' && badge}<span class="badge">{badge}</span>{/if}
       </button>
-    {/each}
+    {/snippet}
+    {#each mainNav as n (n.kind)}{@render navRow(n)}{/each}
+    <button class="nav more" onclick={toggleMore} aria-expanded={moreOpen}>
+      <span class="ico mchev" class:open={moreOpen}><Icon name="right" size={11} /></span>Ещё
+    </button>
+    {#if moreOpen}{#each restNav as n (n.kind)}{@render navRow(n)}{/each}{/if}
   </div>
   <Splitter pane="sidebar" edge="right" label="Ширина боковой панели" />
 </nav>
@@ -404,6 +420,10 @@
   /* the glass icons are light grey: darken them on a light surface */
   :global(:root[data-theme='light']) .nimg { filter: brightness(0.42) contrast(1.15); }
   @media (prefers-color-scheme: light) { :global(:root:not([data-theme='dark'])) .nimg { filter: brightness(0.42) contrast(1.15); } }
+  .nav.more { color: var(--fg-3); }
+  .mchev { transition: transform 0.15s var(--ease); }
+  .mchev.open { transform: rotate(90deg); }
+  @media (prefers-reduced-motion: reduce) { .mchev { transition: none; } }
   .badge {
     margin-left: auto;
     min-width: 18px;

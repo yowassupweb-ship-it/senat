@@ -920,6 +920,16 @@ impl Store {
         Ok(())
     }
 
+    /// A specialist names the chat by what it is about ("CRM: раздел База") instead of the first words of the first
+    /// message. A name the person gave is never replaced. Returns whether the chat was renamed.
+    pub fn name_thread(&self, id: &str, title: &str) -> Result<bool> {
+        let title: String = title.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(48).collect();
+        if title.is_empty() {
+            return Err(Error::invalid("укажи title: короткое название по сути"));
+        }
+        Ok(self.lock().execute("UPDATE threads SET title=? WHERE id=? AND auto_title=1", params![title, id])? == 1)
+    }
+
     pub fn thread_cli_session(&self, id: &str, backend: &str) -> Result<Option<String>> {
         let t = self.get_thread(id)?;
         Ok(t.cli_sessions.get(backend).and_then(|v| v.as_str()).map(String::from))
@@ -2901,6 +2911,25 @@ impl Store {
         if o.state == ObligationState::Waiting && matches!(o.wait_condition, Some(WaitCondition::Obligation { .. } | WaitCondition::Obligations { .. })) {
             let wait = serde_json::to_string(&WaitCondition::Obligations { ids: dependencies.iter().map(|id| (*id).clone()).collect() }).unwrap();
             c.execute("UPDATE obligations SET wait_condition=? WHERE id=?", params![wait, id])?;
+        }
+        // A run already queued for this task was planned under the old conditions. If the task now waits for
+        // others, that run is withdrawn here and now, not whenever the queue next happens to reach it.
+        let mut ready = true;
+        for dep in &dependencies {
+            let done: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM obligations WHERE id=? AND state='done')", [dep], |r| r.get(0))?;
+            ready &= done;
+        }
+        if !ready {
+            let mut st = c.prepare("SELECT id,message_id FROM sessions WHERE obligation_id=? AND status='queued'")?;
+            let stale = st.query_map([id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            drop(st);
+            for (sid, mid) in stale {
+                c.execute("UPDATE sessions SET status='cancelled',ended_at=? WHERE id=?", params![now_ms(), sid])?;
+                if let Some(mid) = mid {
+                    c.execute("UPDATE messages SET status='cancelled',props=json_set(props,'$.phase',NULL,'$.error','условия задачи изменились до запуска') WHERE id=?", [mid])?;
+                }
+                emit_c(&c, "session.cancelled", "session", &sid, "system", serde_json::json!({"reason": "task changed before claim"}))?;
+            }
         }
         emit_c(&c, "obligation.teamwork", "obligation", id, actor, serde_json::json!({"dependencies": dependencies, "reviewer": reviewer}))?;
         Ok(c.query_row(&format!("SELECT {OBL_COLS} FROM obligations WHERE id=?"), [id], obligation_from)?)

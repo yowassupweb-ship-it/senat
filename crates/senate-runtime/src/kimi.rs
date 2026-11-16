@@ -11,6 +11,9 @@ use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 
 const RUN_LIMIT: Duration = Duration::from_secs(2 * 60 * 60);
+/// Kimi streams its thinking, its text and every step. This long without a single line from it is not thinking: the
+/// request to the model hung. Waiting for the person's permission does not count.
+const SILENCE_LIMIT: Duration = Duration::from_secs(10 * 60);
 
 async fn send(p: &mut Proc, v: &Value) {
     if let Some(w) = p.stdin.as_mut() {
@@ -275,6 +278,9 @@ pub async fn run(spec: RunSpec, approver: &dyn Approver, tx: EventTx, mut cancel
 
     let deadline = tokio::time::sleep(RUN_LIMIT);
     tokio::pin!(deadline);
+    let quiet = tokio::time::sleep(SILENCE_LIMIT);
+    tokio::pin!(quiet);
+    let mut stalled = false;
     let mut stopped = false;
     let mut thought = String::new();
     let mut answering = false;
@@ -283,6 +289,7 @@ pub async fn run(spec: RunSpec, approver: &dyn Approver, tx: EventTx, mut cancel
         tokio::select! {
             l = p.lines.recv() => {
                 let Some(l) = l else { break };
+                quiet.as_mut().reset(tokio::time::Instant::now() + SILENCE_LIMIT);
                 let Ok(m) = serde_json::from_str::<Value>(l.trim()) else { continue };
                 if std::env::var_os("SENATE_DEBUG_ACP").is_some() { eprintln!("ACP< {}", clip(&m.to_string(), 700)); }
                 if let Some(method) = m["method"].as_str() {
@@ -317,6 +324,8 @@ pub async fn run(spec: RunSpec, approver: &dyn Approver, tx: EventTx, mut cancel
                                     }
                                 }
                             };
+                            // the person may have taken their time: that was not Kimi being silent
+                            quiet.as_mut().reset(tokio::time::Instant::now() + SILENCE_LIMIT);
                             send(&mut p, &json!({"jsonrpc": "2.0", "id": rid, "result": pick(&options, allow)})).await;
                             if stopped { break }
                         }
@@ -334,6 +343,11 @@ pub async fn run(spec: RunSpec, approver: &dyn Approver, tx: EventTx, mut cancel
             }
             _ = cancel.changed() => { if *cancel.borrow() { stopped = true; break } }
             _ = &mut deadline => { t.failure = Some("Агент работал дольше двух часов — остановлен".into()); break }
+            _ = &mut quiet => {
+                stalled = true;
+                t.failure = Some("Kimi молчит 10 минут: ни шага, ни текста. Запрос к модели завис, поэтому работа остановлена. Сделанные шаги сохранены выше. Повторите; если зависнет снова, дайте задачу частями или смените модель специалиста.".into());
+                break
+            }
         }
     }
     if !stopped && answering {
@@ -347,7 +361,7 @@ pub async fn run(spec: RunSpec, approver: &dyn Approver, tx: EventTx, mut cancel
         let _ = tokio::time::timeout(Duration::from_secs(2), async { p.stdin = None }).await;
     }
     let tail = p.tail.lock().unwrap().clone();
-    if stopped {
+    if stopped || stalled {
         crate::common::kill_tree(&mut p.child).await;
     } else {
         let _ = p.child.kill().await;

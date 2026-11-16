@@ -191,6 +191,8 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/agent/call", post(agent_call))
         .route("/mcp", post(crate::mcp_http::post_root).get(crate::mcp_http::get_not_allowed))
         .route("/mcp/:token", post(crate::mcp_http::post_token).get(crate::mcp_http::get_not_allowed))
+        // the node's own stdio MCP servers, for a specialist working on a person's computer (session token)
+        .route("/mcp-bridge/:name", post(crate::mcp_bridge::post).delete(crate::mcp_bridge::delete).get(crate::mcp_bridge::get_not_allowed))
         // a page a specialist started on the server, passed through for the person (preview.rs)
         .route("/api/preview/:port", get(preview_link))
         .route("/preview/:port", axum::routing::any(crate::preview::handle))
@@ -354,10 +356,16 @@ async fn bind_chat_workspace(a: &Arc<App>, tid: &str, b: &Value) -> Result<Value
     let machine = b["machine"].as_str().unwrap_or(p.node_id.as_deref().unwrap_or(""));
     if on_machine(a,machine,"is_dir",json!({"path":path})).await?["is_dir"] != true { return Err(bad("папки нет на выбранном компьютере")); }
     let git = on_machine(a,machine,"git_status",json!({"root":path})).await.unwrap_or_else(|e|json!({"available":false,"reason":e.1}));
+    a.store.remember_workspace(&pid,machine,path)?;
+    // `activate: false` only records where the project is on that computer: the place work goes to stays as it is,
+    // and this one is used when that place is away (executor::place_project).
+    if b["activate"].as_bool() == Some(false) {
+        a.publish("projects",json!({}));
+        return Ok(json!({"status":"remembered","project":p,"git":git,"note":"Путь на этом компьютере сохранён. Основное место работы не менялось; этот путь используется, когда основной компьютер не в сети."}));
+    }
     if path != p.root_path || machine != p.node_id.as_deref().unwrap_or("") {
         a.store.set_setting(&format!("workspace_revision:{pid}"),&senate_core::new_id())?;
     }
-    a.store.remember_workspace(&pid,machine,path)?;
     let p = a.store.update_project(&pid,ProjectPatch { root_path:Some(path.into()),node_id:Some(machine.into()),..Default::default() })?;
     a.publish("projects",json!({}));
     a.publish("thread",json!({"id":tid}));

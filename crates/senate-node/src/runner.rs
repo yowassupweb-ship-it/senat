@@ -113,7 +113,9 @@ fn spec_to_json(s: &RunSpec, slug: &str, skills_dir: &str) -> Value {
         "backend": s.backend, "effort": s.effort, "mode": s.mode.as_str(), "cwd": s.cwd.to_string_lossy(),
         "system_prompt": s.system_prompt, "prompt": s.prompt, "resume": s.resume, "bare": s.bare, "env": s.env, "run_id": s.run_id,
         "mcp": s.mcp.as_ref().map(|m| json!({"command": m.command, "args": m.args, "env": m.env})),
-        "extra_mcp": s.extra_mcp.iter().map(|m| json!({"name": m.name, "kind": m.kind, "command": m.command, "args": m.args, "env": m.env, "url": m.url, "headers": m.headers, "trusted": m.trusted})).collect::<Vec<_>>(),
+        "extra_mcp": s.extra_mcp.iter().map(|m| json!({"name": m.name, "kind": m.kind, "command": m.command, "args": m.args, "env": m.env, "url": m.url, "headers": m.headers, "trusted": m.trusted,
+            // can the node start it? Then a computer that cannot may use it through the node (mcp_bridge)
+            "bridge": m.kind == "stdio" && usable_here(m)})).collect::<Vec<_>>(),
         "slug": slug, "skills_dir": skills_dir,
         "extra_dirs": s.extra_dirs.iter().map(|d| d.to_string_lossy()).collect::<Vec<_>>(),
     })
@@ -227,7 +229,7 @@ pub(crate) async fn remote_run(app: &Arc<App>, mut spec: RunSpec, slug: &str, ma
         Some(m) => {
             if !app.runner.machine_online(m) {
                 let name = app.store.list_nodes().ok().and_then(|l| l.into_iter().find(|n| n.id == m)).map(|n| n.name).unwrap_or_else(|| "с папкой проекта".into());
-                return fail(&format!("Папка проекта на компьютере «{name}», а он сейчас не в сети. Откройте на нём Senate — работа продолжится там."));
+                return fail(&format!("Папка проекта на компьютере «{name}», а он сейчас не в сети. Откройте на нём Senate — работа продолжится там. Если проект есть и на этом компьютере, укажите его путь: панель проекта → «Папка и компьютер»."));
             }
             m.to_string()
         }
@@ -244,11 +246,15 @@ pub(crate) async fn remote_run(app: &Arc<App>, mut spec: RunSpec, slug: &str, ma
     let mut job = spec_to_json(&spec, slug, &skills_dir);
     job["id"] = json!(id);
     job["machine"] = json!(machine);
+    // "allow always" rules live here; the computer needs them to not ask about what is already allowed
+    job["rules"] = json!(app.store.list_permission_rules().unwrap_or_default());
     app.runner.queue.lock().unwrap().push_back(job);
     app.runner.notify.notify_waiters();
 
     let started = Instant::now();
     let mut picked = false;
+    // questions the rules already answer: their card is never shown, so nothing flashes on the screen
+    let mut silent: std::collections::HashSet<String> = Default::default();
     let mut cancelled_at: Option<Instant> = None;
     // Questions wait for a person, but must not hold up the loop: the card that shows the question travels as an
     // ordinary event through the same channel and would otherwise sit behind the very answer it is waiting for.
@@ -256,7 +262,15 @@ pub(crate) async fn remote_run(app: &Arc<App>, mut spec: RunSpec, slug: &str, ma
     let outcome = loop {
         tokio::select! {
             m = mrx.recv() => match m {
-                Some(RunnerMsg::Event(e)) => { picked = true; let _ = tx.send(e); }
+                Some(RunnerMsg::Event(e)) => {
+                    picked = true;
+                    let hide = match &e {
+                        Event::Ask(req) if approver.preapproved(req) => { silent.insert(req.tool_use_id.clone()); true }
+                        Event::Answered { tool_use_id, .. } => silent.remove(tool_use_id),
+                        _ => false,
+                    };
+                    if !hide { let _ = tx.send(e); }
+                }
                 Some(RunnerMsg::Ask { req, reply }) => {
                     picked = true;
                     let mut cancel = cancel.clone();
@@ -371,6 +385,9 @@ struct RunnerApprover {
     token: String,
     job: String,
     cancel: watch::Receiver<bool>,
+    /// The node's "allow always" rules as they were when the turn started, and the folder paths are relative to.
+    rules: Vec<senate_core::model::PermissionRule>,
+    cwd: PathBuf,
 }
 
 impl Approver for RunnerApprover {
@@ -392,6 +409,11 @@ impl Approver for RunnerApprover {
             }
         })
     }
+
+    /// Already allowed by the person: the agent goes on without a card appearing and disappearing on the screen.
+    fn preapproved(&self, req: &PermissionRequest) -> bool {
+        crate::permissions::allowed(&self.rules, req, &self.cwd)
+    }
 }
 
 /// An MCP server that starts a program by an absolute path works only where that path exists: a server set up on
@@ -409,6 +431,26 @@ pub(crate) fn usable_here(m: &ExtraMcp) -> bool {
     // a script handed to an interpreter (`node /data/mbox-mcp/server.mjs`) must be there as well
     let args_ok = m.args.iter().filter(|a| looks_absolute(a) && (a.ends_with(".js") || a.ends_with(".mjs") || a.ends_with(".py") || a.ends_with(".exe"))).all(|a| Path::new(a).exists());
     cmd_ok && args_ok
+}
+
+/// A server as this computer gets it: its own if it can start it, otherwise — when the node can — the node's copy
+/// over HTTP (`mcp_bridge`; the server and its secrets stay there), otherwise none.
+fn bridged_or_here(x: ExtraMcp, node_can: bool, hub: &str, session_token: &str) -> Option<ExtraMcp> {
+    if usable_here(&x) {
+        return Some(x);
+    }
+    if !node_can || session_token.is_empty() || x.name.is_empty() {
+        return None;
+    }
+    Some(ExtraMcp {
+        kind: "http".into(),
+        url: format!("{}/mcp-bridge/{}", hub.trim_end_matches('/'), x.name),
+        headers: vec![("Authorization".into(), format!("Bearer {session_token}"))],
+        command: String::new(),
+        args: vec![],
+        env: vec![],
+        ..x
+    })
 }
 
 /// Run on a person's computer: keep asking the hub for work and carry it out with the agent CLIs found here.
@@ -529,21 +571,25 @@ async fn handle_job(hub: String, token: String, data_dir: PathBuf, job: Value) {
         // the bridge talks to the hub the way this app does
         env: pairs(&m["env"]).into_iter().map(|(k, v)| if k == "SENATE_HUB" { (k, hub.clone()) } else { (k, v) }).collect(),
     });
+    // the running session's token: it also opens the node's own servers that this computer cannot start
+    let session_token = job["mcp"]["env"].as_array().and_then(|_| pairs(&job["mcp"]["env"]).into_iter().find(|(k, _)| k == "SENATE_SESSION_TOKEN").map(|(_, v)| v)).unwrap_or_default();
     let extra_mcp = job["extra_mcp"]
         .as_array()
         .map(|a| {
             a.iter()
-                .map(|m| ExtraMcp {
-                    name: m["name"].as_str().unwrap_or("").into(),
-                    kind: m["kind"].as_str().unwrap_or("stdio").into(),
-                    command: m["command"].as_str().unwrap_or("").into(),
-                    args: m["args"].as_array().map(|x| x.iter().filter_map(|s| s.as_str().map(String::from)).collect()).unwrap_or_default(),
-                    env: pairs(&m["env"]),
-                    url: m["url"].as_str().unwrap_or("").into(),
-                    headers: pairs(&m["headers"]),
-                    trusted: m["trusted"].as_bool().unwrap_or(false),
+                .filter_map(|m| {
+                    let x = ExtraMcp {
+                        name: m["name"].as_str().unwrap_or("").into(),
+                        kind: m["kind"].as_str().unwrap_or("stdio").into(),
+                        command: m["command"].as_str().unwrap_or("").into(),
+                        args: m["args"].as_array().map(|x| x.iter().filter_map(|s| s.as_str().map(String::from)).collect()).unwrap_or_default(),
+                        env: pairs(&m["env"]),
+                        url: m["url"].as_str().unwrap_or("").into(),
+                        headers: pairs(&m["headers"]),
+                        trusted: m["trusted"].as_bool().unwrap_or(false),
+                    };
+                    bridged_or_here(x, m["bridge"].as_bool().unwrap_or(false), &hub, &session_token)
                 })
-                .filter(usable_here)
                 // `{slug}` in a server's arguments is the specialist: their own browser profile, for one
                 .map(|mut m: ExtraMcp| {
                     m.args = m.args.iter().map(|a| a.replace("{slug}", &safe)).collect();
@@ -552,6 +598,7 @@ async fn handle_job(hub: String, token: String, data_dir: PathBuf, job: Value) {
                 .collect()
         })
         .unwrap_or_default();
+    let run_cwd = cwd.clone();
     let spec = RunSpec {
         backend: job["backend"].as_str().unwrap_or("").into(),
         effort: job["effort"].as_str().map(String::from),
@@ -609,7 +656,7 @@ async fn handle_job(hub: String, token: String, data_dir: PathBuf, job: Value) {
         })
     };
 
-    let approver = RunnerApprover { http: long.clone(), hub: hub.clone(), token: token.clone(), job: id.clone(), cancel: cancel_rx.clone() };
+    let approver = RunnerApprover { http: long.clone(), hub: hub.clone(), token: token.clone(), job: id.clone(), cancel: cancel_rx.clone(), rules: serde_json::from_value(job["rules"].clone()).unwrap_or_default(), cwd: run_cwd };
     let started = std::time::SystemTime::now();
     let outcome = senate_runtime::run(spec, &approver, tx, cancel_rx).await;
     let _ = fwd.await;
@@ -718,5 +765,18 @@ mod tests {
         assert!(!usable_here(&m("node", &["/nowhere/mbox-mcp-server.mjs"])), "a script that is not here");
         let http = ExtraMcp { kind: "http".into(), url: "https://x".into(), ..m("", &[]) };
         assert!(usable_here(&http));
+    }
+
+    #[test]
+    fn a_server_only_the_node_has_is_reached_through_the_node() {
+        let mbox = ExtraMcp { name: "mbox-prod".into(), kind: "stdio".into(), command: "node".into(), args: vec!["/nowhere/mbox-mcp-server.mjs".into()], env: vec![("MBOX_TOKEN".into(), "secret".into())], ..Default::default() };
+        let b = bridged_or_here(mbox.clone(), true, "https://node.example/", "sst_1").expect("the node can start it");
+        assert_eq!((b.kind.as_str(), b.url.as_str()), ("http", "https://node.example/mcp-bridge/mbox-prod"));
+        assert_eq!(b.headers, vec![("Authorization".to_string(), "Bearer sst_1".to_string())]);
+        assert!(b.env.is_empty() && b.command.is_empty(), "the node's secrets are not handed on");
+        assert!(bridged_or_here(mbox.clone(), false, "https://node.example", "sst_1").is_none(), "nobody can start it: left out");
+        assert!(bridged_or_here(mbox, true, "https://node.example", "").is_none(), "no session, no door");
+        let here = ExtraMcp { name: "t".into(), kind: "stdio".into(), command: "npx".into(), ..Default::default() };
+        assert_eq!(bridged_or_here(here, true, "https://node.example", "sst_1").unwrap().kind, "stdio", "its own copy is preferred");
     }
 }

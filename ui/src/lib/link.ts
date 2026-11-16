@@ -19,3 +19,14 @@ export async function readLink(): Promise<LinkState | null> {
     return null;
   }
 }
+
+/** The computer this window is on, as the node knows it. Null in a browser: there the window is on no computer of the person's. */
+export async function readThisMachine(): Promise<{ id: string; name: string } | null> {
+  const internals = (window as any).__TAURI_INTERNALS__;
+  if (!internals?.invoke) return null;
+  try {
+    return ((await internals.invoke('this_machine')) as { id: string; name: string } | null) ?? null;
+  } catch {
+    return null;
+  }
+}

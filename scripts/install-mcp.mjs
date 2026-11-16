@@ -34,10 +34,18 @@ const DEVTOOLS = { name: 'chrome-devtools', command: 'npx', args: ['-y', 'chrome
 const FIGMA = { name: 'figma', command: 'npx', args: ['-y', 'figma-developer-mcp@0.13.2', '--stdio'], env: { FIGMA_API_KEY: '' }, trusted: false, note: 'Figma: макеты, компоненты, переменные и стили по ссылке на файл' };
 
 // The SEO specialist works on a schedule, nobody at the screen: his SEO tools must not wait for a click.
-const SEO_RULES = [{ kind: 'tool', value: 'mcp__mbox-prod__seo_*', label: 'Инструменты SEO Wizard (MBOX): seo_*' }];
+const SEO_RULES = [
+  { kind: 'tool', value: 'mcp__mbox-prod__seo_*', label: 'Инструменты SEO Wizard (MBOX): seo_*' },
+  // Webmaster / Metrica / Topvisor / Wordstat are reached through the integrations, keys stay on the MBOX server
+  { kind: 'tool', value: 'mcp__mbox-prod__integration_*', label: 'Интеграции MBOX (Вебмастер, Метрика, Topvisor): integration_*' },
+  { kind: 'tool', value: 'mcp__mbox-prod__get_agent_context', label: 'Контекст проекта MBOX' },
+  { kind: 'tool', value: 'mcp__mbox-prod__search*', label: 'Поиск по памяти и документам MBOX' },
+  { kind: 'tool', value: 'mcp__mbox-prod__save_report', label: 'Сохранение отчётов в MBOX' },
+];
 
 const PRESETS = {
   'seo-spetsialist': [{ name: 'mbox-prod', existing: true, rules: SEO_RULES }],
+  seo: [{ name: 'mbox-prod', existing: true, rules: SEO_RULES }],
   // developer: docs for libraries + a browser to check what was built
   razrabotchik: [CONTEXT7, PLAYWRIGHT, DEVTOOLS],
   // designer: a browser and DevTools to look at the rendered result, and Figma. MBOX is switched off: Senate replaces it.

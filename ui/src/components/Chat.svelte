@@ -1,6 +1,7 @@
 <script lang="ts">
   import ContextBar from './ContextBar.svelte';
   import ChatWorkspace from './ChatWorkspace.svelte';
+  import NeedsYou from './NeedsYou.svelte';
   import Spinner from './Spinner.svelte';
   import { tick, untrack } from 'svelte';
   import { fileUrl, get, patch, post } from '../lib/api';
@@ -42,11 +43,60 @@
     }
     return out;
   }
-  type Item = { kind: 'msg'; m: Message; at: number } | { kind: 'squeeze'; ms: Message[]; at: number } | { kind: 'post'; p: Post; at: number };
+  type Row = { kind: 'msg'; m: Message; at: number } | { kind: 'squeeze'; ms: Message[]; at: number } | { kind: 'post'; p: Post; at: number };
+  type Item = Row | { kind: 'work'; rows: Row[]; at: number };
+  const rowKey = (it: Item): string => (it.kind === 'msg' ? it.m.id : it.kind === 'squeeze' ? 's' + it.ms[0].id : it.kind === 'work' ? 'w' + rowKey(it.rows[0]) : 'p' + it.p.key);
+  const live = (m: Message) => m.status === 'working' || m.status === 'queued';
+  /**
+   * What specialists say to each other while they work: notes, a question to one colleague and its answer.
+   * The person reads results, not the kitchen, so finished exchanges fold into one thin line.
+   * Anything still running, anything that failed, councils and every word addressed to the person stay as they are.
+   */
+  function isProcess(it: Row): boolean {
+    if (it.kind === 'msg') {
+      const p = (it.m.props ?? {}) as any;
+      return it.m.author_kind === 'agent' && it.m.status === 'done' && (!!p.note || !!p.asked_by);
+    }
+    if (it.kind === 'post') {
+      const members = new Set(it.p.calls.map((c) => (c.props as any)?.call?.to));
+      const all = [...it.p.calls, ...it.p.comments];
+      return members.size <= 1 && !it.p.decision && it.p.comments.length > 0 && !all.some((m) => live(m) || m.status === 'failed');
+    }
+    return false;
+  }
+  function foldWork(items: Row[]): Item[] {
+    const out: Item[] = [];
+    for (const it of items) {
+      const last = out[out.length - 1];
+      if (isProcess(it)) {
+        if (last?.kind === 'work') {
+          last.rows.push(it);
+          last.at = it.at;
+        } else out.push({ kind: 'work', rows: [it], at: it.at });
+      } else out.push(it);
+    }
+    return out;
+  }
+  const rowMessages = (r: Row): Message[] => (r.kind === 'msg' ? [r.m] : r.kind === 'squeeze' ? r.ms : [...r.p.calls, ...r.p.comments]);
+  const stepsWord = (n: number) => (n % 10 === 1 && n % 100 !== 11 ? 'шаг' : n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 12 || n % 100 > 14) ? 'шага' : 'шагов');
+  const hm = (t: number) => new Date(t).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+  function workSummary(rows: Row[]) {
+    const ms = rows.flatMap(rowMessages).sort((a, b) => a.created_at - b.created_at);
+    const ids = new Set<string>();
+    for (const m of ms) {
+      if (m.author_id) ids.add(m.author_id);
+      const p = (m.props ?? {}) as any;
+      for (const id of [p.note?.to, p.call?.to]) if (id) ids.add(id);
+    }
+    const from = ms[0]?.created_at ?? 0;
+    const to = ms[ms.length - 1]?.created_at ?? from;
+    const lastText = (ms[ms.length - 1]?.body ?? '').replace(/^Записка @\S+:\s*/, '').replace(/^→\s*@\S+:\s*/, '').replace(/\s+/g, ' ');
+    return { people: [...ids].map((id) => agentById(id)?.name ?? 'коллега').join(' ↔ '), ids: [...ids], n: ms.length, when: hm(from) === hm(to) ? hm(from) : hm(from) + '–' + hm(to), last: lastText };
+  }
   const flow = $derived.by(() => {
     const byId = new Map(messages.map((m) => [m.id, m]));
     const taken = new Set<string>();
-    const items: Item[] = [];
+    const items: Row[] = [];
     let open: Post | null = null;
     const posts = new Map<string, Post>();
     const P = (m: Message) => (m.props ?? {}) as any;
@@ -114,12 +164,22 @@
         it.at = Math.max(it.p.at, last);
       }
     }
-    return items.sort((a, b) => a.at - b.at);
+    return foldWork(items.sort((a, b) => a.at - b.at));
   });
   const lastAgent = $derived([...messages].reverse().find((m) => m.author_kind === 'agent'));
   const isLive = (m: Message) => m.author_kind === 'agent' && (m.status === 'working' || m.status === 'queued');
   // Anyone still working in this chat (not only the last reply): several specialists can run at once.
   const running = $derived(messages.some(isLive));
+  // A reply shown as queued or working is re-read now and then: an event lost on the way (the node restarted, the
+  // connection dropped, a run withdrawn before it started) must not leave it "in the queue" on the screen forever.
+  $effect(() => {
+    const id = threadId;
+    if (!id || !running) return;
+    const t = setInterval(() => {
+      if (document.visibilityState === 'visible') loadMessages(id).catch(() => {});
+    }, 20000);
+    return () => clearInterval(t);
+  });
   let loading = $state(false);
   // a picture from a message, shown large
   let lightbox = $state<{ url: string; name: string } | null>(null);
@@ -487,12 +547,32 @@
           {#if loading}
             <Spinner size={24} fill />
           {/if}
-          {#each flow as it (it.kind === 'msg' ? it.m.id : it.kind === 'squeeze' ? 's' + it.ms[0].id : 'p' + it.p.key)}
+          {#each flow as it (rowKey(it))}
+            {#if it.kind === 'work'}
+              {@const w = workSummary(it.rows)}
+              <details class="work-fold">
+                <summary>
+                  <span class="wf-chev" aria-hidden="true"><Icon name="right" size={11} /></span>
+                  <span class="wf-faces" aria-hidden="true">{#each w.ids.slice(0, 4) as id (id)}{@const a = agentById(id)}<Avatar name={a?.name} color={a?.accent} size={18} />{/each}</span>
+                  <span class="wf-who">{w.people}</span>
+                  <span class="wf-n">{w.n} {stepsWord(w.n)}</span>
+                  <span class="wf-last">{w.last}</span>
+                  <time class="wf-when">{w.when}</time>
+                </summary>
+                <div class="wf-body">
+                  {#each it.rows as sub (rowKey(sub))}{@render row(sub)}{/each}
+                </div>
+              </details>
+            {:else}
+              {@render row(it)}
+            {/if}
+          {/each}
+          {#snippet row(it: Row)}
             {#if it.kind === 'squeeze'}
               <SqueezeCard items={it.ms} onstop={stop} />
             {:else if it.kind === 'msg'}
               <MessageView m={it.m} onanswer={answer} onstop={stop} onretry={retry} onimage={(a) => (lightbox = a)} onreply={isForum ? undefined : reply} />
-            {:else}
+            {:else if it.kind === 'post'}
               {@const who = agentById(it.p.author)}
               <!-- the caller's message to colleagues, as a chat message: the same request to several is said once -->
               {@const asks = asksOf(it.p.calls)}
@@ -562,7 +642,7 @@
                 {/if}
               </section>
             {/if}
-          {/each}
+          {/snippet}
           {#if !loading && !messages.length}
             <p class="faint center">Здесь пока пусто. Напишите первое сообщение.</p>
           {/if}
@@ -575,6 +655,7 @@
 
     <!-- the composer floats over the chat: the messages run on under it to the bottom edge -->
     <div class="dock" bind:clientHeight={dockH}>
+    <NeedsYou {threadId} />
     <Outbox {threadId} {projectId} queued={messages.filter(m => m.author_kind === 'agent' && m.status === 'queued')} oncancel={stop}/>
     {#if error}<div class="error" role="alert">{error}<button class="icon-btn" onclick={() => (error = '')} aria-label="Закрыть"><Icon name="x" size={13} /></button></div>{/if}
 
@@ -867,6 +948,77 @@
   .center {
     text-align: center;
     padding: 30px 0;
+  }
+  .work-fold {
+    margin: 0 0 6px;
+    border-radius: 8px;
+  }
+  .work-fold summary {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 28px;
+    padding: 2px 8px;
+    border-radius: 8px;
+    font-size: 12px;
+    color: var(--fg-3);
+    cursor: pointer;
+    min-width: 0;
+    list-style: none;
+  }
+  .work-fold summary::-webkit-details-marker {
+    display: none;
+  }
+  .work-fold summary:hover {
+    background: var(--accent-soft);
+    color: var(--fg-2);
+  }
+  .work-fold summary:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
+  .wf-chev {
+    display: inline-flex;
+    transition: transform 0.15s var(--ease);
+  }
+  .work-fold[open] .wf-chev {
+    transform: rotate(90deg);
+  }
+  .wf-faces {
+    display: inline-flex;
+    gap: 2px;
+    flex: none;
+  }
+  .wf-who {
+    color: var(--fg-2);
+    font-weight: 500;
+    white-space: nowrap;
+  }
+  .wf-n,
+  .wf-when {
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+    flex: none;
+  }
+  .wf-last {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .work-fold[open] .wf-last {
+    visibility: hidden;
+  }
+  .wf-body {
+    margin: 6px 0 10px 12px;
+    padding-left: 12px;
+    border-left: 2px solid var(--line);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .wf-chev {
+      transition: none;
+    }
   }
   .older {
     display: block;

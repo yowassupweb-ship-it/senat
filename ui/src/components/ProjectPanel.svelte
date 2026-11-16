@@ -6,6 +6,9 @@
   import Icon from './Icon.svelte';
   import ChatWorkspace from './ChatWorkspace.svelte';
   import Splitter from './Splitter.svelte';
+  import FolderPicker from './FolderPicker.svelte';
+  import { get, post } from '../lib/api';
+  import { readThisMachine } from '../lib/link';
 
   let { threadId, projectId = '' }: { threadId: string; projectId?: string } = $props();
 
@@ -26,6 +29,64 @@
   });
   const changes = $derived(app.git['t:' + threadId]?.changes?.length ?? 0);
   let files = $state<FilesPanel>();
+
+  // A project can be on several computers, in a different folder on each. When it is bound to another computer
+  // and this one has no folder recorded, ask once whether it is here too.
+  let me = $state<{ id: string; name: string } | null>(null);
+  let locations = $state<{ machine: string; path: string }[] | null>(null);
+  let herePath = $state('');
+  let picking = $state(false);
+  let hereBusy = $state(false);
+  let hereError = $state('');
+  let dismissed = $state(0);
+  const hereKey = $derived(project && me ? `senate.here.${project.id}.${me.id}` : '');
+  $effect(() => {
+    readThisMachine().then((m) => (me = m));
+  });
+  $effect(() => {
+    const id = threadId;
+    void project?.root_path;
+    void project?.node_id;
+    locations = null;
+    get(`/api/threads/${id}/workspace`)
+      .then((r) => (locations = Array.isArray(r.locations) ? r.locations : []))
+      .catch(() => {});
+  });
+  function wasDismissed(key: string) {
+    void dismissed;
+    try {
+      return !!key && localStorage.getItem(key) === 'no';
+    } catch {
+      return false;
+    }
+  }
+  const askHere = $derived(
+    !!me && !!project?.root_path && !!project.node_id && project.node_id !== me.id && !!locations && !locations.some((l) => l.machine === me!.id) && !wasDismissed(hereKey)
+  );
+  async function saveHere() {
+    if (!me || !herePath.trim()) return;
+    hereBusy = true;
+    hereError = '';
+    try {
+      // the main computer is away: work moves here; otherwise this folder is only remembered as a second place
+      await post(`/api/threads/${threadId}/workspace`, { path: herePath.trim(), machine: me.id, activate: !!machine && !machine.online });
+      app.projects = await get('/api/projects');
+      locations = [...(locations ?? []), { machine: me.id, path: herePath.trim() }];
+      loadThreadGit(threadId);
+    } catch (e: any) {
+      hereError = e.message;
+    } finally {
+      hereBusy = false;
+    }
+  }
+  function notHere() {
+    try {
+      if (hereKey) localStorage.setItem(hereKey, 'no');
+    } catch {
+      // without storage the question simply comes back next time
+    }
+    dismissed++;
+  }
 
   function pick(t: 'files' | 'changes') {
     app.panelTab = t;
@@ -80,6 +141,23 @@
       <span class="root">{place.label}</span>
     </div>
   {/if}
+  {#if askHere && me}
+    <section class="here" aria-label="Проект на этом компьютере">
+      <b>Этот проект есть на этом компьютере?</b>
+      <p class="faint">
+        Сейчас он привязан к компьютеру «{machine?.name}»{#if machine && !machine.online}, а тот не в сети{/if}. Укажите папку проекта здесь:
+        {machine && !machine.online ? 'работа пойдёт на этом компьютере.' : 'она станет запасным местом, когда тот компьютер не в сети.'}
+      </p>
+      <input class="field" bind:value={herePath} placeholder="Путь к папке проекта на «{me.name}»" aria-label="Путь к папке проекта на этом компьютере" />
+      <div class="here-actions">
+        <button class="btn sm" disabled={hereBusy} onclick={() => (picking = true)}>Выбрать папку</button>
+        <button class="btn sm primary" disabled={hereBusy || !herePath.trim()} onclick={saveHere}>{hereBusy ? 'Проверяю папку…' : 'Сохранить'}</button>
+        <button class="btn sm" disabled={hereBusy} onclick={notHere}>Здесь его нет</button>
+      </div>
+      {#if hereError}<p role="alert">{hereError}</p>{/if}
+    </section>
+  {/if}
+  {#if picking && me}<FolderPicker start={herePath} machine={me.id} where={me.name} onpick={(p) => { herePath = p; picking = false; }} onclose={() => (picking = false)} />{/if}
   {#if tab === 'files'}
     {#key `${filesBase}:${project?.root_path}:${project?.node_id}`}<FilesPanel bind:this={files} base={filesBase} {threadId} onplace={(p) => (place = p)} />{/key}
   {:else}
@@ -88,6 +166,9 @@
 </aside>
 
 <style>
+  .here { margin: 0 12px 10px; padding: 12px; display: grid; gap: 8px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg-raised); font-size: 12.5px; }
+  .here p { margin: 0; font-size: 12px; }
+  .here-actions { display: flex; flex-wrap: wrap; gap: 6px; }
   .workers { padding: 0.75rem; border-bottom: 1px solid var(--line); max-height: 25vh; overflow: auto; }
   .worker { font-size: 0.75rem; overflow-wrap: anywhere; padding-block: 0.25rem; }
   .panel {

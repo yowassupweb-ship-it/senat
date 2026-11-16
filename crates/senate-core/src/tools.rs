@@ -44,8 +44,8 @@ pub fn definitions() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "senate_chat_context",
-            description: "Управление длинным чатом. status — заполнение контекста по участникам; configure с auto=true/false — автосжатие при 80%; compact — попросить сжатие своего контекста после текущего ответа (instructions: что обязательно сохранить). История не удаляется; новая сессия получает сводку целей, решений, файлов, проверок и незавершённой работы. Не обещай, что сжатие уже завершено: оно будет отдельным ходом. history — прочитать прежние сообщения, before — id для следующей страницы. Не редактируй базу Senate вручную.",
-            schema: json!({"type":"object","properties":{"action":{"type":"string","enum":["status","configure","compact","history"]},"auto":{"type":"boolean"},"instructions":{"type":"string"},"before":{"type":"string"}},"required":["action"]}),
+            description: "Управление чатом. title — дать чату короткое название по сути (название, данное человеком, не меняется). status — заполнение контекста по участникам; configure с auto=true/false — автосжатие при 80%; compact — попросить сжатие своего контекста после текущего ответа (instructions: что обязательно сохранить). История не удаляется; новая сессия получает сводку целей, решений, файлов, проверок и незавершённой работы. Не обещай, что сжатие уже завершено: оно будет отдельным ходом. history — прочитать прежние сообщения, before — id для следующей страницы. Не редактируй базу Senate вручную.",
+            schema: json!({"type":"object","properties":{"action":{"type":"string","enum":["status","title","configure","compact","history"]},"title":{"type":"string","description":"для action=title: название чата по сути, до 48 знаков, например «CRM: раздел База»"},"auto":{"type":"boolean"},"instructions":{"type":"string"},"before":{"type":"string"}},"required":["action"]}),
         },
         ToolDef {
             name: "senate_recall",
@@ -368,6 +368,10 @@ fn call_inner(store: &Store, ctx: &ToolCtx, name: &str, a: &Value, bypass: bool)
             let tid = ctx.thread_id.as_deref().ok_or_else(|| Error::invalid("нет чата"))?;
             match s(a,"action") {
                 "status" => store.chat_context(tid),
+                "title" => {
+                    let renamed = store.name_thread(tid, s(a, "title"))?;
+                    Ok(json!({"status": if renamed { "renamed" } else { "kept" }, "note": if renamed { "Название чата обновлено." } else { "Человек сам назвал этот чат: название не менялось." }}))
+                }
                 "configure" => {
                     let enabled = a["auto"].as_bool().ok_or_else(|| Error::invalid("укажи auto: true или false"))?;
                     store.set_forum_meta(tid,&json!({"context_auto":enabled}))?;
@@ -512,6 +516,11 @@ fn call_inner(store: &Store, ctx: &ToolCtx, name: &str, a: &Value, bypass: bool)
                 dependencies: serde_json::from_value(a.get("dependencies").cloned().unwrap_or(json!([]))).map_err(|_| Error::invalid("dependencies: нужен список id"))?,
                 reviewer_id: if s(a, "reviewer").is_empty() { None } else { Some(store.get_agent(s(a, "reviewer"))?.id) },
             })?;
+            // A task set from a chat is worked on in that chat: the person follows one conversation, not a new chat
+            // per task. (A task set elsewhere still gets a chat of its own on first run, see `obligation_thread`.)
+            if let Some(t) = &ctx.thread_id {
+                let _ = store.set_setting(&format!("obl-thread:{}", o.id), t);
+            }
             Ok(json!({"id": o.id, "owner": owner, "state": o.state.as_str()}))
         }
         "senate_obligation_update" => {

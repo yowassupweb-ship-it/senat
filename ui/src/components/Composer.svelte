@@ -328,6 +328,11 @@
   const group = $derived((picked ?? []).map((id) => app.agents.find((a) => a.id === id)).filter((a): a is NonNullable<typeof a> => !!a));
   const groupLabel = $derived(group.length === 1 ? group[0].name : group.length === 2 ? `${group[0].name}, ${group[1].name}` : `${group.length} специалиста`);
   const effMode = $derived(settings.mode || projectMode || 'edit');
+  // Who to write to is the one choice made every time. Permissions and effort are set once, for the specialist and
+  // the project; here they sit behind one button and are spelled out next to it only when changed for this chat.
+  let tune = $state(false);
+  const customMode = $derived(!!settings.mode && settings.mode !== (projectMode || 'edit'));
+  const customNote = $derived([customMode ? modeOpts.find((o) => o.id === effMode)?.label : '', settings.effort ? effortOpts.find((o) => o.id === settings.effort)?.label : ''].filter(Boolean).join(' · '));
 </script>
 
 <svelte:window onpointerdown={onWindowPointer} onkeydown={onWindowKey} />
@@ -384,6 +389,9 @@
         </Dropdown>
       {/if}
       {#if !compact}
+        <button class="tunebtn" class:set={!!customNote} type="button" onclick={() => (tune = !tune)} aria-expanded={tune} aria-label="Разрешения и усилие для этого чата" title="Разрешения и усилие для этого чата"><Icon name="sliders" size={14} />{#if customNote && !tune}<span>{customNote}</span>{/if}</button>
+      {/if}
+      {#if !compact && tune}
         <Dropdown value={effMode} options={modeOpts} up label="Режим разрешений" onpick={(id) => onchange({ ...settings, mode: id })}>
           {#snippet children(cur)}<Icon name="permissions" size={13} />{cur?.label}{/snippet}
         </Dropdown>
@@ -508,6 +516,10 @@
     color: var(--fg-3);
     cursor: default;
   }
+  .tunebtn { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 8px; border-radius: 8px; color: var(--fg-3); font-size: 12.5px; white-space: nowrap; }
+  .tunebtn:hover, .tunebtn[aria-expanded='true'] { background: var(--accent-soft); color: var(--fg); }
+  .tunebtn.set { color: var(--fg-2); }
+  .tunebtn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
   .stopbtn {
     display: inline-flex;
     align-items: center;

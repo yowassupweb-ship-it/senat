@@ -194,6 +194,27 @@ fn flush(app: &App, msg_id: &str, p: &mut Progress) {
     }
 }
 
+/// A project can be on several of the person's computers, in a different folder on each. Work goes to its main
+/// place; when that computer is away, to another computer that is connected and has the project (a person's
+/// computer before the node). This turn only: the project itself is not changed.
+fn place_project(app: &App, p: &mut Project) {
+    let main = p.node_id.clone().unwrap_or_default();
+    if p.root_path.is_empty() || main.is_empty() || main == app.machine_id || app.runner.machine_online(&main) {
+        return;
+    }
+    let rows = app.store.workspace_locations(&p.id).ok().and_then(|v| v.as_array().cloned()).unwrap_or_default();
+    let here = |m: &str| m.is_empty() || m == app.machine_id;
+    let other = rows
+        .iter()
+        .filter_map(|r| Some((r["machine"].as_str()?.to_string(), r["path"].as_str()?.to_string())))
+        .filter(|(m, path)| !path.is_empty() && *m != main && (here(m) || app.runner.machine_online(m)))
+        .max_by_key(|(m, _)| !here(m));
+    if let Some((m, path)) = other {
+        p.node_id = if here(&m) { None } else { Some(m) };
+        p.root_path = path;
+    }
+}
+
 pub(crate) async fn execute(app: Arc<App>, s: Session) {
     let preparation_started = std::time::Instant::now();
     let queue_ms = senate_core::now_ms().saturating_sub(s.created_at);
@@ -204,7 +225,10 @@ pub(crate) async fn execute(app: Arc<App>, s: Session) {
         return;
     };
     let thread = s.thread_id.as_deref().and_then(|t| store.get_thread(t).ok());
-    let project = thread.as_ref().and_then(|t| t.project_id.as_deref()).and_then(|p| store.get_project(p).ok());
+    let mut project = thread.as_ref().and_then(|t| t.project_id.as_deref()).and_then(|p| store.get_project(p).ok());
+    if let Some(p) = project.as_mut() {
+        place_project(&app, p);
+    }
     let msg_id = s.message_id.clone().unwrap_or_default();
     let _ = store.on_session_started(&s);
     if let Ok(m) = store.update_message(&msg_id, None, Some(&json!({"phase": "запускается", "agent": agent.id, "sessionId": s.id})), Some(MessageStatus::Working)) {
@@ -236,7 +260,30 @@ pub(crate) async fn execute(app: Arc<App>, s: Session) {
     // works on it: the folder, the dev server and the tools are there. Otherwise a specialist set to "local" works
     // on the computer connected last, and everyone else on the node.
     let project_machine = project.as_ref().filter(|p| !p.root_path.is_empty()).and_then(|p| p.node_id.clone()).filter(|m| !m.is_empty() && *m != app.machine_id);
-    let local = project_machine.is_some() || store.setting(&format!("exec:{}", agent.id)).ok().flatten().as_deref() == Some("local");
+    let wants_local = store.setting(&format!("exec:{}", agent.id)).ok().flatten().as_deref() == Some("local");
+    // "On my computer" with no computer connected used to be a failed turn. When the node itself has this agent
+    // installed and signed in, the turn runs here instead: the specialist's own folder follows them both ways.
+    let node_can = app.caps.read().unwrap().iter().any(|c| c["backend"] == provider.as_str() && c["ready"] == true);
+    // After a restart of the node the person's app is back within seconds: wait for it rather than run a turn in
+    // the wrong place (on the node their localhost and their files are out of reach).
+    if wants_local && project_machine.is_none() && node_can {
+        for _ in 0..45 {
+            if app.runner.online() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    }
+    let to_node = wants_local && project_machine.is_none() && !app.runner.online() && node_can;
+    if to_node {
+        let note = "Компьютер не подключён: этот ход выполнен на узле.";
+        let note = match &fallback_note {
+            Some(n) => format!("{n} {note}"),
+            None => note.to_string(),
+        };
+        let _ = store.update_message(&msg_id, None, Some(&json!({"fallback": note})), None);
+    }
+    let local = project_machine.is_some() || (wants_local && !to_node);
     // The computer the turn goes to is fixed now, so the session continued is that computer's own.
     let project_machine = if local && project_machine.is_none() { app.runner.latest_machine() } else { project_machine };
     // CLI sessions live on the computer that ran them: a session from one computer means nothing on another.

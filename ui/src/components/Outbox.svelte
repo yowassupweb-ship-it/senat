@@ -49,15 +49,15 @@
 {/if}
 
 <style>
-  .outbox { margin: 0 auto 0.5rem; max-width: 53rem; padding: 2px 8px 4px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg-raised); font-size: 12px; }
-  .queue-title { display: flex; align-items: center; gap: 6px; width: 100%; min-height: 26px; color: var(--fg-2); font-size: 12px; font-weight: 600; border-radius: var(--radius-s); }
+  .outbox { margin: 0 auto 0.375rem; width: fit-content; min-width: min(22rem, calc(100% - 2rem)); max-width: min(38rem, calc(100% - 2rem)); padding: 0 8px 2px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg-raised); font-size: 12px; }
+  .queue-title { display: flex; align-items: center; gap: 6px; width: 100%; min-height: 24px; color: var(--fg-2); font-size: 12px; font-weight: 600; border-radius: var(--radius-s); }
   .queue-title:hover { color: var(--fg); }
   .chev { display: inline-flex; color: var(--fg-3); transition: transform .15s var(--ease); }
   .chev.open { transform: rotate(90deg); }
   .count { min-width: 18px; padding: 0 6px; border-radius: 9px; background: var(--bg-active); color: var(--fg-2); font-size: 11px; font-weight: 600; line-height: 18px; text-align: center; font-variant-numeric: tabular-nums; }
   .warnline { margin-left: auto; color: var(--bad); font-weight: 500; }
   ol { list-style: none; margin: 0; padding: 0; max-height: 9.5rem; overflow-y: auto; }
-  li { display: flex; align-items: center; gap: 8px; padding: 5px 4px; border-top: 1px solid var(--line); border-radius: 0; }
+  li { display: flex; align-items: center; gap: 8px; padding: 3px 4px; border-top: 1px solid var(--line); border-radius: 0; }
   li:first-child { border-top: 0; }
   li.failed { background: var(--bad-soft); border-radius: var(--radius-s); border-top-color: transparent; }
   .lead { flex: none; display: grid; place-items: center; width: 20px; height: 20px; color: var(--fg-3); }
@@ -65,13 +65,13 @@
   .spin :global(svg) { animation: spin 1s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
   @media (prefers-reduced-motion: reduce) { .spin :global(svg) { animation: none; } }
-  .pending-text { min-width: 0; flex: 1; }
-  .preview { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--fg); }
+  .pending-text { min-width: 0; flex: 1; display: flex; align-items: baseline; gap: 8px; }
+  .preview { display: block; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--fg); }
   .preview b { font-weight: 600; }
-  small { display: block; color: var(--fg-3); font-size: 11px; }
+  small { flex: none; color: var(--fg-3); font-size: 11px; white-space: nowrap; }
   li.failed small { color: var(--bad); }
   .rm { opacity: 0; transition: opacity .12s var(--ease); }
   li:hover .rm, .rm:focus-visible { opacity: 1; }
   @media (hover: none) { .rm { opacity: 1; } }
-  @media (max-width: 600px) { .outbox { margin-inline: 0.5rem; } }
+  @media (max-width: 600px) { .outbox { margin-inline: 0.5rem; width: auto; max-width: none; } }
 </style>
