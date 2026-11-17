@@ -4,8 +4,8 @@
   import Spinner from '../components/Spinner.svelte';
   import Dropdown from '../components/Dropdown.svelte';
   import { get, patch, post, put } from '../lib/api';
-  import { app, go, onEvent } from '../lib/store.svelte';
-  import { MODE_LABEL, N, STATE_LABEL, count, timeAgo } from '../lib/format';
+  import { app, go, loadGit, onEvent } from '../lib/store.svelte';
+  import { MODE_LABEL, N, STATE_LABEL, baseName, count, tidyHint, timeAgo } from '../lib/format';
   import type { Agent, Decision, Obligation, Project, Thread } from '../lib/types';
   import Avatar from '../components/Avatar.svelte';
   import FolderPicker from '../components/FolderPicker.svelte';
@@ -31,6 +31,12 @@
   let d = $state<{ project: Project; members: Agent[]; decisions: Decision[]; obligations: Obligation[]; threads: Thread[]; memory: any[] } | null>(null);
   let f = $state({ goal: '', criteria: '', constraints: '' });
   let newDecision = $state('');
+  // the rarely changed part of a project (goal, rules, folder, company, mode, members) waits behind one button
+  let settingsOpen = $state(false);
+  $effect(() => {
+    const pid = d?.project.id;
+    if (pid && d?.project.root_path) loadGit(pid);
+  });
 
   async function load(refreshOnly = false) {
     if (!id) return (d = null);
@@ -196,28 +202,122 @@
     {/each}
   </Page>
 {:else if d}
-  <Page title={d.project.name} sub={d.project.root_path || 'Без рабочей папки'} back={{ label: 'Проекты', onclick: () => go({ kind: 'projects' }) }}>
+  {@const live = app.live.filter((r) => r.workspace?.project_id === d!.project.id || (!!r.thread_id && d!.threads.some((t) => t.id === r.thread_id)))}
+  {@const git = app.git[d.project.id]}
+  {@const place = placeOf(d.project)}
+  {@const open = d.obligations.filter((o) => !['done', 'cancelled'].includes(o.state))}
+  <Page title={d.project.name} sub={d.project.goal || 'Цель не задана'} back={{ label: 'Проекты', onclick: () => go({ kind: 'projects' }) }}>
     {#snippet actions()}
+      <button class="btn" onclick={() => (settingsOpen = !settingsOpen)} aria-expanded={settingsOpen}><Icon name="sliders" size={14} />Настройки</button>
       <button class="btn primary" onclick={() => go({ kind: 'new', project: id })}><Icon name="chat" size={14} />Новый чат</button>
     {/snippet}
-    {#if d.project.root_path}<p class="muted">Общая папка: специалисты работают по очереди, чтобы не перезаписывать изменения друг друга.</p>{/if}
-    <TeamWork obligations={d.obligations} members={d.members} />
-    <div class="split">
-      <div>
-        <div class="section">
-          <h2>Картина работы</h2>
-          <div class="card pad form">
+
+    <div class="facts" aria-label="Коротко о проекте">
+      <span class="fact" title={d.project.root_path || ''}><span class="dot" class:on={!!place?.online}></span>{place ? `${place.name} · ${baseName(d.project.root_path)}` : 'без рабочей папки'}</span>
+      {#if git?.available}<span class="fact"><Icon name="branch" size={12} />{git.branch}{#if git.changes?.length}<span>· изменено: {git.changes.length}</span>{/if}</span>{/if}
+      <span class="fact">{open.length ? `задач в работе: ${open.length}` : 'открытых задач нет'}</span>
+      <span class="fact faces">{#each d.members.slice(0, 6) as m (m.id)}<Avatar name={m.name} color={m.accent} size={20} />{/each}{#if !d.members.length}участников нет{/if}</span>
+    </div>
+
+    {#if settingsOpen}
+      <section class="settings card pad" aria-label="Настройки проекта">
+        <div class="sgrid">
+          <div class="form">
             <label>Цель<textarea class="field" rows="2" bind:value={f.goal}></textarea></label>
             <label>Критерии результата<textarea class="field" rows="2" bind:value={f.criteria}></textarea></label>
             <label>Ограничения<textarea class="field" rows="2" bind:value={f.constraints}></textarea></label>
             <div class="row">
               <button class="btn primary" disabled={f.goal === d.project.goal && f.criteria === d.project.criteria && f.constraints === d.project.constraints} onclick={() => save(f)}>Сохранить</button>
-              <small class="faint">Изменение требований попадёт в журнал и станет основанием пересмотреть связанную работу.</small>
+              <small class="faint">Изменение попадёт в журнал и станет основанием пересмотреть связанную работу.</small>
+            </div>
+          </div>
+          <div class="form">
+            <span class="lbl">Рабочая папка</span>
+            {#if d.project.root_path}
+              <div class="mono path">{d.project.root_path}</div>
+            {:else}<div class="faint small">Не выбрана: специалисты работают без доступа к вашим файлам.</div>{/if}
+            <div class="row">
+              {#if app.machines.length}<Dropdown value={d.project.node_id ?? ''} options={machineOptions} label="Компьютер с папкой" onpick={(v) => ((pickMachine = v), (picking = 'edit'))} />{/if}
+              <button class="btn" onclick={() => ((pickMachine = d!.project.node_id ?? ''), (picking = 'edit'))}><Icon name="folder" size={14} />Выбрать…</button>
+              {#if d.project.root_path}<button class="btn" onclick={() => save({ root_path: '', node_id: '' })}>Отвязать</button>{/if}
+            </div>
+            <label>Компания
+              <Dropdown block value={d.project.company_id ?? ''} options={[{ id: '', label: 'Без компании' }, ...app.companies.map((c) => ({ id: c.id, label: c.name }))]} label="Компания" onpick={(v) => save({ company_id: v })} /></label>
+            <label>Режим по умолчанию
+              <Dropdown block value={d.project.mode} options={Object.entries(MODE_LABEL).map(([k, v]) => ({ id: k, label: v.label, hint: v.hint }))} label="Режим по умолчанию" onpick={(v) => save({ mode: v })} /></label>
+            <span class="lbl">Участники</span>
+            <div class="members">
+              {#each app.agents as a (a.id)}
+                {@const on = d.members.some((m) => m.id === a.id)}
+                <button class="member" class:on aria-pressed={on} onclick={() => toggleMember(a)}><Avatar name={a.name} color={a.accent} size={18} />{a.name}{#if on}<Icon name="check" size={12} />{/if}</button>
+              {/each}
             </div>
           </div>
         </div>
+        {#if error}<p class="bad">{error}</p>{/if}
+      </section>
+    {/if}
 
-        <div class="section">
+    <div class="split">
+      <div>
+        <section class="section">
+          <h2>Сейчас</h2>
+          <ul class="list">
+            {#each live as r (r.session_id)}
+              {@const a = app.agents.find((x) => x.id === r.agent_id)}
+              <li><button class="item" onclick={() => r.thread_id && go({ kind: 'chat', id: r.thread_id })}>
+                <Avatar name={a?.name} color={a?.accent} size={24} />
+                <span class="grow"><span class="title">{a?.name ?? 'Специалист'}</span>
+                  <div class="sub">{r.awaiting ? 'ждёт вашего ответа' : tidyHint(r.hint) || r.phase}</div></span>
+                <span class="faint">{r.status === 'queued' ? 'в очереди' : timeAgo(r.since)}</span></button></li>
+            {:else}<li class="empty-note">Сейчас никто не работает над проектом.</li>{/each}
+          </ul>
+        </section>
+
+        <section class="section">
+          <h2>Чаты <span class="count">{d.threads.length}</span></h2>
+          <ul class="list">
+            {#each d.threads.slice(0, 12) as t (t.id)}
+              <li><button class="item" onclick={() => go({ kind: 'chat', id: t.id })}>
+                <span class="grow title">{t.title || 'Новый чат'}</span>
+                {#if t.awaiting}<span class="chip warn">ждёт вас</span>{:else if t.working}<span class="chip">работает</span>{/if}
+                <span class="faint">{timeAgo(t.updated_at)}</span></button></li>
+            {:else}<li class="empty-note">Чатов пока нет. Начните с «Новый чат».</li>{/each}
+          </ul>
+        </section>
+
+        <section class="section">
+          <h2>Задачи <span class="count">{open.length}</span></h2>
+          <ul class="list">
+            {#each open.slice(0, 20) as o (o.id)}
+              <li><button class="item" onclick={() => go({ kind: 'obligations', id: o.id })}>
+                <span class="dot {o.state}"></span><span class="grow"><span class="title">{o.title}</span>{#if o.blocker}<div class="sub">{o.blocker}</div>{/if}</span>
+                <span class="chip">{STATE_LABEL[o.state]}</span></button></li>
+            {:else}<li class="empty-note">Открытых задач нет.</li>{/each}
+          </ul>
+          {#if open.length}<div class="team"><TeamWork obligations={d.obligations} members={d.members} /></div>{/if}
+        </section>
+      </div>
+
+      <div>
+        <section class="section">
+          <h2>Изменения{#if git?.changes?.length}<span class="count">{git.changes.length}</span>{/if}</h2>
+          <div class="card pad">
+            {#if !d.project.root_path}<p class="faint small">У проекта нет рабочей папки: изменения смотреть негде.</p>
+            {:else if !git}<p class="faint small">Смотрю репозиторий…</p>
+            {:else if !git.available}<p class="faint small">{git.reason === 'не git-репозиторий' ? 'Папка проекта не git-репозиторий.' : `Недоступно: ${git.reason}.`}</p>
+            {:else}
+              <div class="faint small"><Icon name="branch" size={12} /> {git.branch}{#if git.last_commit}<span> · {git.last_commit}</span>{/if}</div>
+              <ul class="files">
+                {#each (git.changes ?? []).slice(0, 10) as c (c.path)}<li title={c.path}><span class="mark {c.status}"></span><span class="fn">{baseName(c.path)}</span><span class="faint fp">{c.path.includes('/') ? c.path.slice(0, c.path.lastIndexOf('/')) : ''}</span></li>
+                {:else}<li class="faint">Рабочее дерево чистое.</li>{/each}
+              </ul>
+              {#if (git.changes?.length ?? 0) > 10}<p class="faint small">и ещё {(git.changes?.length ?? 0) - 10}</p>{/if}
+            {/if}
+          </div>
+        </section>
+
+        <section class="section">
           <h2>Решения <span class="count">{d.decisions.length}</span></h2>
           <ul class="list">
             {#each d.decisions as dec (dec.id)}
@@ -229,64 +329,13 @@
                   <button class="btn sm" onclick={() => decide(dec, 'rejected')}>Отклонить</button>
                 {/if}
               </li>
-            {:else}<li class="empty-note">Решений пока нет</li>{/each}
+            {:else}<li class="empty-note">Решений пока нет.</li>{/each}
           </ul>
           <form class="row" style="margin-top:8px" onsubmit={(e) => { e.preventDefault(); propose(); }}>
             <input class="field" bind:value={newDecision} placeholder="Предложить решение, например: «Храним данные в SQLite»" />
             <button class="btn" type="submit">Предложить</button>
           </form>
-        </div>
-
-        <div class="section">
-          <h2>Задача <span class="count">{d.obligations.length}</span></h2>
-          <ul class="list">
-            {#each d.obligations.slice(0, 20) as o (o.id)}
-              <li><button class="item" onclick={() => go({ kind: 'obligations', id: o.id })}>
-                <span class="dot {o.state}"></span><span class="grow"><span class="title">{o.title}</span></span>
-                <span class="chip">{STATE_LABEL[o.state]}</span></button></li>
-            {:else}<li class="empty-note">Нет задач</li>{/each}
-          </ul>
-        </div>
-      </div>
-
-      <div>
-        <div class="section">
-          <h2>Рабочая папка</h2>
-          <div class="card pad form">
-            {#if d.project.root_path}
-              <div class="faint" style="font-size:12px">{machineName(d.project.node_id ?? '')}{#if d.project.node_id && !app.machines.find((m) => m.id === d!.project.node_id)?.online} · не в сети{/if}</div>
-              <div class="mono" style="font-size:12.5px;overflow-wrap:anywhere">{d.project.root_path}</div>
-            {:else}<div class="faint" style="font-size:13px">Не выбрана — специалисты работают без доступа к вашим файлам</div>{/if}
-            <div class="row">
-              {#if app.machines.length}<Dropdown value={d.project.node_id ?? ''} options={machineOptions} label="Компьютер с папкой" onpick={(v) => ((pickMachine = v), (picking = 'edit'))} />{/if}
-              <button class="btn" onclick={() => ((pickMachine = d!.project.node_id ?? ''), (picking = 'edit'))}><Icon name="folder" size={14} />Выбрать…</button>
-              {#if d.project.root_path}<button class="btn" onclick={() => save({ root_path: '', node_id: '' })}>Отвязать</button>{/if}</div>
-            <p class="faint" style="font-size:12px;margin:0">Специалисты работают над проектом на том компьютере, где лежит папка: там его файлы, сервер разработки и инструменты.</p>
-            <label>Компания
-              <Dropdown block value={d.project.company_id ?? ''} options={[{ id: '', label: 'Без компании' }, ...app.companies.map((c) => ({ id: c.id, label: c.name }))]} label="Компания" onpick={(v) => save({ company_id: v })} /></label>
-            <label>Режим по умолчанию
-              <Dropdown block value={d.project.mode} options={Object.entries(MODE_LABEL).map(([k, v]) => ({ id: k, label: v.label, hint: v.hint }))} label="Режим по умолчанию" onpick={(v) => save({ mode: v })} /></label>
-          </div>
-          {#if error}<p class="bad">{error}</p>{/if}
-        </div>
-        <div class="section">
-          <h2>Участники</h2>
-          <ul class="list">
-            {#each app.agents as a (a.id)}
-              <li><button class="item" onclick={() => toggleMember(a)}>
-                <Avatar name={a.name} color={a.accent} size={22} /><span class="grow">{a.name}</span>
-                {#if d.members.some((m) => m.id === a.id)}<Icon name="check" size={15} />{/if}</button></li>
-            {/each}
-          </ul>
-        </div>
-        <div class="section">
-          <h2>Чаты</h2>
-          <ul class="list">
-            {#each d.threads.slice(0, 8) as t (t.id)}
-              <li><button class="item" onclick={() => go({ kind: 'chat', id: t.id })}><span class="grow sub">{t.title || 'Новый чат'}</span><span class="faint">{timeAgo(t.updated_at)}</span></button></li>
-            {:else}<li class="empty-note">Чатов нет</li>{/each}
-          </ul>
-        </div>
+        </section>
       </div>
     </div>
   </Page>
@@ -295,6 +344,28 @@
 {/if}
 
 <style>
+  .facts { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 20px; }
+  .fact { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; padding: 0 10px; border-radius: 10px; background: var(--bg-raised); border: 1px solid var(--line); color: var(--fg-2); font-size: 12.5px; line-height: 26px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .fact.faces { gap: 2px; }
+  .settings { margin-bottom: 22px; }
+  .sgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 20px; }
+  .lbl { font-size: 12.5px; color: var(--fg-2); }
+  .path { font-size: 12.5px; overflow-wrap: anywhere; }
+  .small { font-size: 12.5px; margin: 0; }
+  .members { display: flex; flex-wrap: wrap; gap: 6px; }
+  .member { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px 0 5px; border-radius: 14px; border: 1px solid var(--line); font-size: 12.5px; color: var(--fg-2); }
+  .member.on { background: var(--accent-soft); color: var(--fg); border-color: transparent; }
+  .member:hover { color: var(--fg); }
+  .member:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .team { margin-top: 12px; }
+  .files { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 2px; font-size: 12.5px; }
+  .files li { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .fn { white-space: nowrap; }
+  .fp { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mark { width: 7px; height: 7px; border-radius: 2px; flex: none; background: var(--fg-3); }
+  .mark.new, .mark.added { background: var(--ok); }
+  .mark.modified, .mark.renamed { background: var(--warn); }
+  .mark.deleted { background: var(--bad); }
   .psearch { display: flex; align-items: center; gap: 8px; max-width: 360px; height: 32px; margin-bottom: 18px; padding: 0 10px; border-radius: 8px; background: var(--bg-raised); border: 1px solid var(--line); color: var(--fg-3); }
   .psearch input { flex: 1; min-width: 0; background: none; border: 0; outline: 0; color: var(--fg); font: inherit; font-size: 13px; }
   .psearch:focus-within { border-color: var(--accent); }

@@ -3,7 +3,7 @@
   import { get, patch, post, put, upload } from '../lib/api';
   import { squarePng } from '../lib/image';
   import { app, go } from '../lib/store.svelte';
-  import { N, ROLE_TITLE, STATE_LABEL, count, dots, roleLabel, timeAgo } from '../lib/format';
+  import { N, ROLE_TITLE, STATE_LABEL, count, dots, roleLabel, tidyHint, timeAgo } from '../lib/format';
   import { modelOptions, modelTitle } from '../lib/models';
   import { effortOptions, effortTitle, providerOf } from '../lib/effort';
   import type { Memory, Obligation, Project } from '../lib/types';
@@ -16,6 +16,24 @@
   import Switch from '../components/Switch.svelte';
 
   let { id }: { id?: string } = $props();
+
+  // The list says what each specialist is doing right now, which model and how much of its subscription is spent,
+  // and where they run: the questions asked before handing anyone work.
+  const firstSentence = (t: string) => {
+    const one = (t || '').replace(/s+/g, ' ').trim();
+    const m = /^(.{20,160}?[.!?])(s|$)/.exec(one);
+    return m ? m[1] : one.slice(0, 160);
+  };
+  const agentRows = $derived(
+    app.agents
+      .map((a) => {
+        const run = app.live.filter((r) => r.agent_id === a.id).sort((x, y) => Number(!!y.awaiting) - Number(!!x.awaiting) || Number(y.status === 'running') - Number(x.status === 'running'))[0];
+        const prov = providerOf(a.model_pref, app.defaultBackend);
+        const w = app.accounts.find((c) => c.provider === prov && c.state === 'ready')?.limits?.windows?.five_hour;
+        return { a, run, limit: w ? Math.min(100, Math.round(w.used)) : null, where: exec.modes[a.id] === 'local' ? 'local' : 'node' };
+      })
+      .sort((x, y) => Number(!!y.run) - Number(!!x.run) || (y.a.level ?? 1) - (x.a.level ?? 1)),
+  );
 
   // Where each specialist works: on the node, or on this person's own computer (the Senate app runs the turns).
   let exec = $state<{ modes: Record<string, string>; runner_online: boolean }>({ modes: {}, runner_online: false });
@@ -285,26 +303,29 @@
         {#if error}<p class="bad">{error}</p>{/if}
       </form>
     {/if}
-    <div class="cards">
-      {#each app.agents as a (a.id)}
-        <button class="card click hero-card" onclick={() => go({ kind: 'agents', id: a.id })} style="--c:{a.accent}">
-          <div class="top">
-            <span class="port"><Avatar name={a.name} color={a.accent} size={60} progress={xpFraction(a)} /><span class="lvl" title="Уровень">{a.level ?? 1}</span></span>
-            <div class="who">
-              <b>{a.name}</b>
-              {#if roleLabel(a)}<span class="muted">{roleLabel(a)}</span>{/if}
-            </div>
-          </div>
-          <p class="muted clamp">{a.profile}</p>
-          <div class="meta">
-            <span class="chip">{#if a.model_pref}<BrandMark id={a.model_pref} size={12} tint />{modelTitle(app.accounts, a.model_pref)}{:else}Модель по умолчанию{/if}</span>
-            {#if a.open_obligations}<span class="chip">{count(a.open_obligations, N.task)}</span>{/if}
-            {#if a.running}<span class="chip accent">{a.running} в работе</span>{/if}
-            {#if a.blocked}<span class="chip bad">{a.blocked} заблок.</span>{/if}
-          </div>
-        </button>
+    <ul class="alist" aria-label="Специалисты">
+      {#each agentRows as r (r.a.id)}
+        {@const a = r.a}
+        <li>
+          <button class="arow" onclick={() => go({ kind: 'agents', id: a.id })} style="--c:{a.accent}">
+            <span class="port"><Avatar name={a.name} color={a.accent} size={40} progress={xpFraction(a)} /><span class="lvl" title="Уровень">{a.level ?? 1}</span></span>
+            <span class="amain">
+              <span class="aname"><b>{a.name}</b>{#if roleLabel(a)}<span class="muted">{roleLabel(a)}</span>{/if}</span>
+              <span class="aline" class:now={!!r.run} class:wait={!!r.run?.awaiting}>
+                {#if r.run}<span class="pulse" aria-hidden="true"></span><span class="at">{r.run.awaiting ? 'ждёт вашего ответа' : tidyHint(r.run.hint) || r.run.phase || 'работает'}</span>{:else}<span class="at">{firstSentence(a.profile)}</span>{/if}
+              </span>
+            </span>
+            <span class="ameta">
+              <span class="chip">{#if a.model_pref}<BrandMark id={a.model_pref} size={12} tint />{modelTitle(app.accounts, a.model_pref)}{:else}Модель по умолчанию{/if}</span>
+              {#if r.limit !== null}<span class="meter" title={`Лимит подписки за 5 часов: использовано ${r.limit}%`} class:hot={r.limit >= 80}><span class="fill" style="width:{r.limit}%"></span></span>{/if}
+              {#if a.blocked}<span class="chip bad">{a.blocked} заблок.</span>{:else if a.open_obligations}<span class="chip">{count(a.open_obligations, N.task)}</span>{/if}
+              <span class="where" title={r.where === 'local' ? 'Работает на вашем компьютере' : 'Работает на сервере'}><Icon name={r.where === 'local' ? 'monitor' : 'server'} size={12} /></span>
+            </span>
+            <span class="chev" aria-hidden="true"><Icon name="right" size={12} /></span>
+          </button>
+        </li>
       {/each}
-    </div>
+    </ul>
   </Page>
 {:else if sheet}
   {@const a = sheet.agent}
@@ -545,9 +566,6 @@
     flex-direction: column;
     min-width: 0;
   }
-  .who b {
-    font-size: 15px;
-  }
   .port {
     position: relative;
     display: inline-flex;
@@ -776,11 +794,33 @@
 
   /* the council's members: a glow in their own colour, the ring of experience around the face, a gold level */
   .cards { grid-template-columns: repeat(auto-fill, minmax(min(100%, 330px), 1fr)); gap: 16px; }
+  .alist { list-style: none; margin: 0; padding: 0; border-radius: 12px; background: var(--bg-raised); border: 1px solid var(--line); overflow: hidden; }
+  .alist li + li .arow { border-top: 1px solid var(--line); }
+  .arow { display: flex; align-items: center; gap: 14px; width: 100%; min-height: 66px; padding: 10px 16px; text-align: left; transition: background 0.12s var(--ease); }
+  .arow:hover { background: var(--accent-soft); }
+  .arow:active { background: var(--bg-active); }
+  .arow:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .arow .port { flex: none; }
+  .amain { flex: 1; min-width: 0; display: grid; gap: 3px; }
+  .aname { display: flex; align-items: baseline; gap: 8px; min-width: 0; font-size: 14px; }
+  .aname .muted { font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .aline { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 12.5px; color: var(--fg-3); }
+  .aline .at { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .aline.now { color: var(--accent); font-weight: 500; }
+  .aline.wait { color: var(--warn); }
+  .pulse { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--ok); animation: apulse 1.6s var(--ease) infinite; }
+  @keyframes apulse { 50% { opacity: 0.35; } }
+  .ameta { flex: none; display: flex; align-items: center; gap: 10px; color: var(--fg-3); }
+  .meter { width: 38px; height: 4px; border-radius: 2px; background: var(--bg-active); overflow: hidden; }
+  .meter .fill { display: block; height: 100%; background: var(--accent); }
+  .meter.hot .fill { background: var(--warn); }
+  .where { display: inline-flex; }
+  .arow .chev { flex: none; color: var(--fg-3); }
+  @media (prefers-reduced-motion: reduce) { .pulse { animation: none; } .arow { transition: none; } }
+  @media (max-width: 700px) { .arow { flex-wrap: wrap; } .ameta { width: 100%; padding-left: 54px; flex-wrap: wrap; } .arow .chev { display: none; } }
   .hero-card { padding: 18px 18px 16px; gap: 12px; background: var(--bg-raised); }
   .hero-card::before { display: none; }
   .top { gap: 14px; }
-  .who b { font-size: 16px; font-weight: 600; letter-spacing: -0.015em; }
-  .who .muted { font-size: 13px; }
   .port :global(.av) { box-shadow: none; }
   .lvl {
     right: -6px;

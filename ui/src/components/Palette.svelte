@@ -2,13 +2,15 @@
   import { focusScope } from "../lib/focus";
   import { app, go, applyTheme, type View } from '../lib/store.svelte';
   import { post } from '../lib/api';
+  import { timeAgo } from '../lib/format';
   import Icon from './Icon.svelte';
 
   let q = $state('');
   let sel = $state(0);
   let input: HTMLInputElement;
 
-  type Cmd = { label: string; hint?: string; icon: string; run: () => void };
+  // kind orders the results: what the person opens most (chats, projects) before sections and settings
+  type Cmd = { label: string; hint?: string; icon: string; run: () => void; kind?: 'chat' | 'project' | 'agent' | 'nav' | 'act'; at?: number; live?: boolean };
 
   const all = $derived.by<Cmd[]>(() => {
     const out: Cmd[] = [
@@ -28,15 +30,22 @@
       { label: 'Тема: тёмная', icon: 'sparkle', run: () => applyTheme('dark') },
       { label: 'Тема: как в системе', icon: 'sparkle', run: () => applyTheme('auto') },
     ];
-    for (const t of app.threads) out.push({ label: t.title || 'Новый чат', hint: 'чат', icon: 'chat', run: () => go({ kind: 'chat', id: t.id }) });
+    for (const c of out) c.kind = c.label.startsWith('Тема') || c.label === 'Новый чат' ? 'act' : 'nav';
+    for (const t of app.threads) {
+      if (t.archived) continue;
+      const p = t.project_id ? app.projects.find((x) => x.id === t.project_id)?.name : '';
+      const state = t.awaiting ? 'ждёт вас' : t.working ? 'работает' : timeAgo(t.updated_at);
+      out.push({ label: t.title || 'Новый чат', hint: p ? `${p} · ${state}` : state, icon: 'chat', kind: 'chat', at: t.updated_at, live: !!(t.awaiting || t.working), run: () => go({ kind: 'chat', id: t.id }) });
+    }
     for (const p of app.projects) {
-      out.push({ label: p.name, hint: 'проект', icon: 'img:projects', run: () => go({ kind: 'projects', id: p.id }) });
-      out.push({ label: `Новый чат в «${p.name}»`, icon: 'new-chat', run: () => go({ kind: 'new', project: p.id }) });
+      out.push({ label: p.name, hint: 'проект', icon: 'img:projects', kind: 'project', run: () => go({ kind: 'projects', id: p.id }) });
+      out.push({ label: `Новый чат в «${p.name}»`, icon: 'new-chat', kind: 'act', run: () => go({ kind: 'new', project: p.id }) });
     }
     for (const a of app.agents) {
       out.push({
         label: `Написать: ${a.name}`,
         icon: 'img:agents',
+        kind: 'agent',
         run: async () => {
           const t = await post('/api/threads', { agent_id: a.id });
           app.threads.unshift(t);
@@ -48,9 +57,34 @@
     return out;
   });
 
-  const list = $derived(
-    (q.trim() ? all.filter((c) => c.label.toLowerCase().includes(q.trim().toLowerCase())) : all.slice(0, 9)).slice(0, 12),
-  );
+  // Typed on the wrong keyboard layout ("ckjdj" for "слово") still finds it: the person should not have to retype.
+  const EN = "`qwertyuiop[]asdfghjkl;'zxcvbnm,.";
+  const RU = "ёйцукенгшщзхъфывапролджэячсмитьбю";
+  // both ways: Latin typed for Cyrillic, and Cyrillic typed for Latin (an English project name on the Russian layout)
+  const swap = (t: string) => [...t].map((ch) => { const i = EN.indexOf(ch); if (i >= 0) return RU[i]; const j = RU.indexOf(ch); return j >= 0 ? EN[j] : ch; }).join('');
+  const RANK: Record<string, number> = { chat: 0, project: 0, agent: 1, act: 2, nav: 2 };
+  function score(c: Cmd, words: string[]): number | null {
+    const hay = (c.label + ' ' + (c.hint ?? '')).toLowerCase();
+    if (!words.every((w) => hay.includes(w))) return null;
+    const label = c.label.toLowerCase();
+    const first = words[0];
+    const where = label.startsWith(first) ? 0 : label.split(/[s«:·-]+/).some((p) => p.startsWith(first)) ? 1 : 2;
+    return where * 10 + (RANK[c.kind ?? 'nav'] ?? 2);
+  }
+  const list = $derived.by(() => {
+    const query = q.trim().toLowerCase();
+    // nothing typed: what the person most likely wants back, the chats that wait for them or work, then the latest
+    if (!query) {
+      const chats = all.filter((c) => c.kind === 'chat').sort((a, b) => Number(!!b.live) - Number(!!a.live) || (b.at ?? 0) - (a.at ?? 0));
+      return [...chats.slice(0, 7), ...all.filter((c) => c.kind === 'act' && c.label === 'Новый чат')];
+    }
+    const run = (qq: string) => {
+      const words = qq.split(/s+/).filter(Boolean);
+      return all.map((c) => ({ c, s: score(c, words) })).filter((x) => x.s !== null).sort((a, b) => a.s! - b.s! || (b.c.at ?? 0) - (a.c.at ?? 0)).map((x) => x.c);
+    };
+    const found = run(query);
+    return (found.length ? found : run(swap(query))).slice(0, 12);
+  });
 
   $effect(() => {
     q;
@@ -81,7 +115,7 @@
 <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
 <div class="scrim" onclick={() => (app.palette = false)}>
   <div class="pal" use:focusScope={() => (app.palette = false)} role="dialog" tabindex="-1" aria-modal="true" aria-label="Поиск и команды" onclick={(e) => e.stopPropagation()}>
-    <div class="in"><Icon name="search" size={16} /><input bind:this={input} bind:value={q} onkeydown={onKey} aria-label="Поиск команд" placeholder="Чат, проект, специалист или команда" /></div>
+    <div class="in"><Icon name="search" size={16} /><input bind:this={input} bind:value={q} onkeydown={onKey} aria-label="Поиск команд" placeholder="Чат, проект, специалист или раздел" /></div>
     <ul role="listbox">
       {#each list as c, i (c.label + i)}
         <li>
