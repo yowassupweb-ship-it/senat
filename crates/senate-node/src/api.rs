@@ -952,13 +952,25 @@ async fn git_on(a: &Arc<App>, root: String, machine: String) -> R {
     }
 }
 
-async fn thread_git_status(State(a): S, Path(id): Path<String>) -> R {
+/// `?repo=<path inside the folder>`: a repository found inside a folder that is not one itself (project_git::nested_repos).
+fn sub_repo(root: String, q: &HashMap<String, String>) -> Result<String, ApiError> {
+    match q.get("repo").filter(|r| !r.is_empty()) {
+        Some(r) => {
+            safe_rel(r)?;
+            Ok(format!("{}/{}", root.trim_end_matches(['/', '\\']), r))
+        }
+        None => Ok(root),
+    }
+}
+
+async fn thread_git_status(State(a): S, Path(id): Path<String>, Query(q): Query<HashMap<String, String>>) -> R {
     let Some((root, machine)) = thread_place(&a, &id) else { return ok(json!({"available": false, "reason": "у чата нет рабочей папки"})) };
-    git_on(&a, root, machine).await
+    git_on(&a, sub_repo(root, &q)?, machine).await
 }
 
 async fn thread_diff(State(a): S, Path(id): Path<String>, Query(q): Query<HashMap<String, String>>) -> R {
     let (root, machine) = thread_place(&a, &id).ok_or_else(|| bad("у чата нет рабочей папки"))?;
+    let root = sub_repo(root, &q)?;
     let path = q.get("path").cloned().unwrap_or_default();
     safe_rel(&path)?;
     ok(on_machine(&a, &machine, "git_diff", json!({"root": root, "path": path})).await?)

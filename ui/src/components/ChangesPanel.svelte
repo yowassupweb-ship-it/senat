@@ -1,7 +1,7 @@
 <script lang="ts">
   import Spinner from './Spinner.svelte';
   import { get } from '../lib/api';
-  import { app, loadGit, loadThreadGit } from '../lib/store.svelte';
+  import { app, loadGit, loadThreadGit, pickThreadRepo } from '../lib/store.svelte';
   import { baseName } from '../lib/format';
   import Diff from './Diff.svelte';
   import Icon from './Icon.svelte';
@@ -21,7 +21,10 @@
     selected = path;
     loading = true;
     try {
-      const r = await get(`${api}/diff${path ? `?path=${encodeURIComponent(path)}` : ''}`);
+      const q = new URLSearchParams();
+      if (path) q.set('path', path);
+      if (threadId && git?.repo) q.set('repo', git.repo);
+      const r = await get(`${api}/diff${q.size ? '?' + q : ''}`);
       diff = r.diff;
     } catch (e: any) {
       diff = '';
@@ -59,9 +62,24 @@
   {#if !git}
     <Spinner fill />
   {:else if !git.available}
-    <p class="faint pad">Недоступно: {git.reason}. Папка проекта должна быть git-репозиторием.</p>
+    {#if threadId && git.repos?.length}
+      <div class="repos pad">
+        <p class="faint">Сама папка не репозиторий, но внутри есть репозитории. Чьи изменения показать?</p>
+        <ul class="repolist">
+          {#each git.repos as r (r)}
+            <li><button class="repo" onclick={() => { selected = null; pickThreadRepo(threadId, r); }}><Icon name="branch" size={12} /><span>{r}</span></button></li>
+          {/each}
+        </ul>
+      </div>
+    {:else}
+      <div class="pad">
+        <p><b>Изменений пока не видно</b></p>
+        <p class="faint">{git.reason === 'не git-репозиторий' ? 'В рабочей папке нет git-репозитория. Привяжите папку проекта с репозиторием: «Папка и компьютер» выше или «Привязать проект / Git» под полем ввода.' : `Причина: ${git.reason}.`}</p>
+      </div>
+    {/if}
   {:else}
     <div class="meta faint"><Icon name="branch" size={12} /> {git.branch} · {git.last_commit}{#if bare} · {git.stat || 'без изменений'}{/if}</div>
+    {#if threadId && git.repo}<div class="meta faint">репозиторий <b>{git.repo}</b> <button class="relink" onclick={() => { selected = null; pickThreadRepo(threadId, ''); }}>сменить</button></div>{/if}
     <ul>
       {#each git.changes ?? [] as c (c.path)}
         <li>
@@ -85,6 +103,14 @@
 </svelte:element>
 
 <style>
+  .repolist { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 4px; }
+  .repo { display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px; font-size: 12.5px; text-align: left; }
+  .repo:hover { background: var(--accent-soft); }
+  .repo:focus-visible, .relink:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .repo span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .relink { color: var(--accent); margin-left: 4px; border-radius: 4px; }
+  .relink:hover { text-decoration: underline; }
+  .pad p { margin: 0 0 4px; }
   .panel.bare {
     width: auto;
     border: 0;

@@ -72,7 +72,9 @@
   const busy = $derived(runs.some((r) => r.status === 'running' || r.status === 'queued' || r.awaiting));
   // someone waiting for the person's answer opens the panel even when it was folded: the answer is right there
   const waiting = $derived(runs.some((r) => r.ask || r.question));
-  const open = $derived(pinned || waiting || (busy && !dismissed && wide));
+  // Two side panels at once leave the conversation a narrow strip. While the project's files are open, this one
+  // keeps to its rail (it still opens for a question that waits for the person).
+  const open = $derived(waiting || (!app.panel && (pinned || (busy && !dismissed && wide))));
   $effect(() => {
     if (!busy) dismissed = false;
   });

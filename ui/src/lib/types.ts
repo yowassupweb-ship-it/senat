@@ -411,4 +411,8 @@ export interface GitStatus {
   /** commits not pushed / not pulled yet; null without an upstream branch */
   ahead?: number | null;
   behind?: number | null;
+  /** the folder is not a repository, but these inside it are (paths relative to it) */
+  repos?: string[];
+  /** which of them is shown, when one was picked */
+  repo?: string;
 }

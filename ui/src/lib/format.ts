@@ -252,8 +252,48 @@ export function explainFailure(raw?: string | null): { title: string; hint: stri
  * A step's hint as the agent CLI reports it, made readable. A shell command arrives wrapped in the full path of the
  * shell and its flags, and in a narrow panel that wrapper is all there is room for. The person wants the command.
  */
+const STEP_NAMES: Record<string, string> = {
+  senate_message_colleague: 'Пишет записку коллеге',
+  senate_call_colleague: 'Зовёт коллегу',
+  senate_ask_colleague: 'Спрашивает коллегу',
+  senate_ask_person: 'Задаёт вам вопрос',
+  senate_inbox: 'Читает записки коллег',
+  senate_acknowledge_note: 'Подтверждает записку',
+  senate_colleagues: 'Смотрит, кто из коллег свободен',
+  senate_recall: 'Вспоминает',
+  senate_remember: 'Запоминает',
+  senate_correct_memory: 'Исправляет запись в памяти',
+  senate_find: 'Ищет в компаниях и проектах',
+  senate_attach: 'Привязывает чат к проекту',
+  senate_workspace: 'Смотрит папку проекта',
+  senate_chat_context: 'Настраивает чат',
+  senate_obligations: 'Смотрит задачи',
+  senate_obligation_create: 'Ставит задачу',
+  senate_obligation_update: 'Обновляет задачу',
+  senate_obligation_history: 'Читает историю задачи',
+  senate_decision: 'Предлагает решение',
+  senate_artifact_read: 'Читает материал',
+  senate_artifact_save: 'Сохраняет материал',
+  senate_preview: 'Показывает страницу',
+  senate_equipment: 'Смотрит свои инструменты',
+  senate_image_generate: 'Рисует картинку',
+  'updating todo list': 'Обновляет план',
+  record_memory: 'Запоминает',
+};
+
+/**
+ * A step's hint as the agent CLI reports it, made readable. A shell command arrives wrapped in the full path of the
+ * shell and its flags, and in a narrow panel that wrapper is all there is room for. The person wants the command.
+ * Tool names and the CLI's English phrases are said in the person's language.
+ */
 export function tidyHint(hint?: string | null): string {
   const h = (hint || '').trim();
+  const named = STEP_NAMES[h.toLowerCase().replace(/^mcp__[a-z0-9-]+__/, '')];
+  if (named) return named;
+  const search = /^Searching for '?(.+?)'?( in (.+))?$/.exec(h);
+  if (search) return `Ищет «${search[1].length > 60 ? search[1].slice(0, 60) + '…' : search[1]}»${search[3] ? ' в ' + baseName(search[3]) : ''}`;
+  const verb = /^(Searching|Reading|Writing|Editing|Listing) (.+)$/.exec(h);
+  if (verb) return `${{ Searching: 'Ищет в', Reading: 'Читает', Writing: 'Пишет', Editing: 'Правит', Listing: 'Смотрит папку' }[verb[1]]} ${baseName(verb[2]) || verb[2]}`;
   const m = /^(Команда:\s*)([\s\S]*)$/.exec(h);
   if (!m) return h;
   let cmd = m[2].trim().replace(/\\\\/g, '\\');

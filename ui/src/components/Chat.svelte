@@ -1064,5 +1064,13 @@
     text-align: center;
   }
   header { min-height: 62px; height: auto; padding: 12px 24px; border-bottom: 1px solid var(--line); background: var(--toolbar); flex-wrap: wrap; }
+  /* A toolbar is one row: the title gives way first, then the chips; the buttons never drop to a second line. */
+  @media (min-width: 761px) {
+    header { flex-wrap: nowrap; }
+    header > :global(*) { flex: none; }
+    header > .title { flex: 0 1 auto; min-width: 72px; max-width: none; }
+    header > :global(.chip) { flex: 0 2 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    header > :global(.grow) { flex: 1 1 0; min-width: 0; }
+  }
   @media (max-width: 760px) { header { padding: 14px 12px 14px 52px; gap: 6px; } .empty { padding: 24px 16px; } .scroll { padding: 0 16px; } }
 </style>

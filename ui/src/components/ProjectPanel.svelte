@@ -9,6 +9,7 @@
   import FolderPicker from './FolderPicker.svelte';
   import { get, post } from '../lib/api';
   import { readThisMachine } from '../lib/link';
+  import { tidyHint } from '../lib/format';
 
   let { threadId, projectId = '' }: { threadId: string; projectId?: string } = $props();
 
@@ -113,14 +114,14 @@
     <button class="icon-btn" onclick={refresh} aria-label="Обновить" title="Обновить"><Icon name="refresh" size={14} /></button>
     <button class="icon-btn" onclick={() => (app.panel = false)} aria-label="Закрыть панель" title="Закрыть панель"><Icon name="x" size={14} /></button>
   </header>
-  <button class="btn sm" onclick={() => settings = !settings}>Папка и компьютер</button>
+  <button class="place-btn" onclick={() => settings = !settings} aria-expanded={settings}><Icon name="sliders" size={13} />Папка и компьютер</button>
   {#if settings}<ChatWorkspace {threadId} {projectId} onclose={() => settings = false} />{/if}
   {#if workers.length}
     <section class="workers" aria-label="Кто работает в проекте">
       {#each workers as run (run.session_id)}
         <div class="worker"><b>{app.agents.find(a => a.id === run.agent_id)?.name ?? 'Участник'}</b> · {run.status === 'queued' ? 'в очереди' : run.awaiting ? 'ждёт ответа' : 'работает'}
-          <div class="faint">{run.hint || run.phase}</div>
-          <div class="faint">{run.workspace?.path ? `${machineName(run.workspace.machine)} · ${run.workspace.path}` : 'Рабочая папка уточняется при запуске'}</div>
+          <div class="faint" title={run.hint || run.phase}>{tidyHint(run.hint || run.phase)}</div>
+          {#if run.workspace?.path}<div class="faint">{machineName(run.workspace.machine)} · {run.workspace.path}</div>{/if}
         </div>
       {/each}
     </section>
@@ -169,6 +170,9 @@
   .here { margin: 0 12px 10px; padding: 12px; display: grid; gap: 8px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg-raised); font-size: 12.5px; }
   .here p { margin: 0; font-size: 12px; }
   .here-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+  .place-btn { display: inline-flex; align-items: center; gap: 6px; align-self: flex-start; height: 26px; margin: 0 12px 8px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--line); color: var(--fg-2); font-size: 12.5px; }
+  .place-btn:hover, .place-btn[aria-expanded='true'] { background: var(--accent-soft); color: var(--fg); }
+  .place-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
   .workers { padding: 0.75rem; border-bottom: 1px solid var(--line); max-height: 25vh; overflow: auto; }
   .worker { font-size: 0.75rem; overflow-wrap: anywhere; padding-block: 0.25rem; }
   .panel {

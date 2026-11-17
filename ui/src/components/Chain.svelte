@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Step } from '../lib/types';
-  import { dots, dur } from '../lib/format';
+  import { dots, dur, tidyHint } from '../lib/format';
   import Icon from './Icon.svelte';
   import Diff from './Diff.svelte';
 
@@ -71,7 +71,7 @@
           <li class="step" data-status={s.status}>
             <button class="srow" onclick={() => (expanded[i] = !expanded[i])} aria-expanded={!!expanded[i]}>
               <span class="ic"><Icon name={icon(s.name)} size={13} /></span>
-              <span class="hint">{s.hint || s.name}</span>
+              <span class="hint" title={s.hint || s.name}>{tidyHint(s.hint || s.name)}</span>
               <span class="state">
                 {#if s.status === 'running'}<i class="spin"></i>
                 {:else if s.status === 'awaiting'}<span class="chip warn">ждёт разрешения</span>

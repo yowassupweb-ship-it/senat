@@ -226,9 +226,31 @@ export async function loadGit(projectId: string) {
 }
 
 /** Git state of whatever folder a chat works in (its project's folder or the specialist's own workspace). */
-export async function loadThreadGit(threadId: string) {
+// A chat whose folder is not a repository can look at one inside it (the specialists' own folders hold the code a
+// level down). The choice belongs to the chat and to this browser.
+export function threadRepo(threadId: string): string {
   try {
-    app.git['t:' + threadId] = await get(`/api/threads/${threadId}/git`);
+    return localStorage.getItem(`senate.repo.${threadId}`) || '';
+  } catch {
+    return '';
+  }
+}
+export function pickThreadRepo(threadId: string, repo: string): Promise<void> {
+  try {
+    if (repo) localStorage.setItem(`senate.repo.${threadId}`, repo);
+    else localStorage.removeItem(`senate.repo.${threadId}`);
+  } catch {
+    // without storage the choice lasts until the page is reloaded
+  }
+  return loadThreadGit(threadId, repo);
+}
+export async function loadThreadGit(threadId: string, picked?: string): Promise<void> {
+  try {
+    const repo = picked ?? threadRepo(threadId);
+    const r = await get(`/api/threads/${threadId}/git${repo ? `?repo=${encodeURIComponent(repo)}` : ''}`);
+    // the repository picked earlier is gone: back to the folder itself and what it offers now
+    if (repo && !r.available && picked === undefined) return pickThreadRepo(threadId, '');
+    app.git['t:' + threadId] = { ...r, repo: r.available ? repo : '' };
   } catch {
     // keep the last known state: a failed refresh must not make the git bar vanish
   }
