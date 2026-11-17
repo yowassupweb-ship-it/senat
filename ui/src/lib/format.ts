@@ -179,7 +179,7 @@ export const dots = (...parts: (string | number | false | null | undefined)[]) =
 
 /** "7:13 PM" / "19:13" in a provider's message → "19:13". */
 function timeIn(text: string): string {
-  const m = /(d{1,2}):(d{2})s*(am|pm)?/i.exec(text);
+  const m = /(\d{1,2}):(\d{2})\s*(am|pm)?/i.exec(text);
   if (!m) return '';
   let h = +m[1];
   const ap = (m[3] || '').toLowerCase();
@@ -199,6 +199,27 @@ export function explainFailure(raw?: string | null): { title: string; hint: stri
   if (has('usage limit', 'rate limit', 'too many requests', 'quota', 'limit reached', 'out of credits', 'purchase more credits')) {
     const at = timeIn(t);
     return { title: 'Исчерпан лимит подписки', hint: at ? `Модель снова будет доступна после ${at}. Можно повторить позже или переключить специалиста на другую модель.` : 'Подождите, пока лимит обновится, или переключите специалиста на другую модель.' };
+  }
+  if (has('не в сети')) {
+    return { title: 'Компьютер с проектом не в сети', hint: 'Откройте на нём Senate. Если проект есть и на этом компьютере, укажите его папку: панель проекта → «Папка и компьютер».' };
+  }
+  if (has('не подключено')) {
+    return { title: 'Senate на компьютере не запущен', hint: 'Запустите приложение на компьютере специалиста или переключите его на работу «На ноде» в карточке специалиста.' };
+  }
+  if (has('молчит 10 минут')) {
+    return { title: 'Модель зависла, работа остановлена', hint: 'Сделанные шаги сохранены. Повторите; если зависнет снова, дайте задачу частями или смените специалисту модель.' };
+  }
+  if (has('условия задачи изменились')) {
+    return { title: 'Запуск отменён: задача изменилась', hint: 'Теперь она ждёт других задач и запустится сама, когда они будут готовы.' };
+  }
+  if (has('duplicate key') && has('config.toml')) {
+    return { title: 'Сломан файл настроек Codex', hint: 'В config.toml одна секция записана дважды. Удалите повтор (строка указана в подробностях) и нажмите «Повторить».' };
+  }
+  if (has('thread-store conflict', 'thread persistence')) {
+    return { title: 'Сессия Codex занята другим запуском', hint: 'Нажмите «Повторить» через несколько секунд.' };
+  }
+  if (has('internal error', 'reconnecting...')) {
+    return { title: 'Сбой на стороне модели', hint: 'Это не ошибка задачи. Нажмите «Повторить».' };
   }
   if (has('unknown sessionid', 'session not found', 'no conversation found')) {
     return { title: 'Сессия специалиста устарела', hint: 'Нажмите «Повторить»: он начнёт новую сессию и заново прочитает этот чат.' };
@@ -225,4 +246,19 @@ export function explainFailure(raw?: string | null): { title: string; hint: stri
     return { title: 'Рабочая папка недоступна', hint: 'Проверьте, что папка проекта существует, или выберите другую в настройках проекта.' };
   }
   return { title: 'Ответ не получен', hint: t ? '' : 'Причина неизвестна. Повторите — если не поможет, загляните в подробности.' };
+}
+
+/**
+ * A step's hint as the agent CLI reports it, made readable. A shell command arrives wrapped in the full path of the
+ * shell and its flags, and in a narrow panel that wrapper is all there is room for. The person wants the command.
+ */
+export function tidyHint(hint?: string | null): string {
+  const h = (hint || '').trim();
+  const m = /^(Команда:\s*)([\s\S]*)$/.exec(h);
+  if (!m) return h;
+  let cmd = m[2].trim().replace(/\\\\/g, '\\');
+  cmd = cmd.replace(/^"?(?:[A-Za-z]:)?[^"\s]*?(?:powershell|pwsh|cmd|bash|zsh|sh)(?:\.exe)?"?\s+/i, '');
+  for (let i = 0; i < 6; i++) cmd = cmd.replace(/^(?:-NoProfile|-NoLogo|-NonInteractive|-ExecutionPolicy\s+\S+|-Command|-lc|-c|\/d|\/s|\/c)\s+/i, '');
+  cmd = cmd.replace(/^(["'])([\s\S]*)\1$/, '$2').replace(/\s+/g, ' ').trim();
+  return cmd ? m[1] + cmd : h;
 }

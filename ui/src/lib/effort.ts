@@ -9,10 +9,11 @@ export function providerOf(backend?: string | null, fallback = ''): Provider {
   return p === 'claude' || p === 'codex' || p === 'kimi' ? p : '';
 }
 
-const BY: Record<Exclude<Provider, ''>, { title: string; def: string; low: string; medium: string; high: string }> = {
+const BY: Record<Exclude<Provider, ''>, { title: string; def: string; low: string; medium: string; high: string; names?: [string, string, string] }> = {
   claude: { title: 'Claude · effort', def: 'Claude решает сам: глубже на трудном', low: 'effort low · быстро и дёшево', medium: 'effort medium', high: 'effort high · глубоко, дороже по лимиту' },
   codex: { title: 'GPT · reasoning effort', def: 'по умолчанию модели', low: 'reasoning low · быстро', medium: 'reasoning medium', high: 'reasoning high · дольше и дороже' },
-  kimi: { title: 'Kimi · thinking', def: 'по умолчанию Kimi (max)', low: 'thinking low · быстро', medium: 'thinking high', high: 'thinking max · самый глубокий' },
+  // Kimi has exactly three levels and names them itself (asked from the CLI: low, high, max; high is its default)
+  kimi: { title: 'Kimi · thinking', def: 'как у самого Kimi: high', low: 'быстрее всего, думает мало', medium: 'обычный режим Kimi', high: 'самый глубокий и самый медленный', names: ['Low', 'High', 'Max'] },
 };
 
 export function effortTitle(p: Provider): string {
@@ -31,8 +32,8 @@ export function effortOptions(p: Provider): Option[] {
   const b = BY[p];
   return [
     { id: '', label: 'По умолчанию', hint: b.def },
-    { id: 'low', label: 'Быстро', hint: b.low },
-    { id: 'medium', label: 'Средне', hint: b.medium },
-    { id: 'high', label: 'Глубоко', hint: b.high },
+    { id: 'low', label: b.names?.[0] ?? 'Быстро', hint: b.low },
+    { id: 'medium', label: b.names?.[1] ?? 'Средне', hint: b.medium },
+    { id: 'high', label: b.names?.[2] ?? 'Глубоко', hint: b.high },
   ];
 }

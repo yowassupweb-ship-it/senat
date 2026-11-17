@@ -34,6 +34,10 @@
   });
   const elapsed = $derived(Math.max(0, Math.round((now - m.created_at) / 1000)));
   let copied = $state(false);
+  // A long message of the person (a pasted brief, a forwarded conversation) is shown by its beginning: the answer
+  // under it is what they come back for.
+  let fullBody = $state(false);
+  const longBody = $derived(m.author_kind === 'user' && (m.body.length > 700 || m.body.split('\n').length > 10));
   // a stop takes a few seconds on a computer: the button says at once that it was taken
   let stopping = $state(false);
   $effect(() => {
@@ -136,7 +140,8 @@
   <div class="msg user">
     <div class="bubble">
       {#if p.replyTo}<div class="quote muted">{p.replyTo.text}</div>{/if}
-      {#if m.body}<div class="utext">{m.body}</div>{/if}
+      {#if m.body}<div class="utext" class:clamp={longBody && !fullBody}>{m.body}</div>{/if}
+      {#if longBody}<button class="more" type="button" onclick={() => (fullBody = !fullBody)} aria-expanded={fullBody}>{fullBody ? 'Свернуть' : 'Показать полностью'}</button>{/if}
       {#if p.attachments?.length}
         <div class="atts">
           {#each p.attachments as a}
@@ -296,6 +301,27 @@
   .utext {
     white-space: pre-wrap;
     overflow-wrap: anywhere;
+  }
+  .utext.clamp {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 8;
+    line-clamp: 8;
+    overflow: hidden;
+  }
+  .more {
+    display: block;
+    margin-top: 4px;
+    color: var(--accent);
+    font-size: 12.5px;
+    border-radius: 4px;
+  }
+  .more:hover {
+    text-decoration: underline;
+  }
+  .more:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
   }
   .quote {
     font-size: 12px;

@@ -239,7 +239,15 @@ pub async fn run(spec: RunSpec, approver: &dyn Approver, tx: EventTx, mut cancel
         call(&mut p, &mut id, "initialize", init_params(), 40).await?;
         t.phase("готовит диалог");
         let session = match &spec.resume {
-            Some(r) => call(&mut p, &mut id, "session/load", json!({"sessionId": r, "cwd": spec.cwd.to_string_lossy(), "mcpServers": mcp_list(&spec)}), 60).await?,
+            Some(r) => {
+                // Kimi's own `resume` picks the conversation up where it stopped. `load` replays the whole history
+                // to us line by line first, which on a long chat is most of the wait before the first step.
+                let args = json!({"sessionId": r, "cwd": spec.cwd.to_string_lossy(), "mcpServers": mcp_list(&spec)});
+                match call(&mut p, &mut id, "session/resume", args.clone(), 60).await {
+                    Ok(s) => s,
+                    Err(_) => call(&mut p, &mut id, "session/load", args, 60).await?,
+                }
+            }
             None => call(&mut p, &mut id, "session/new", json!({"cwd": spec.cwd.to_string_lossy(), "mcpServers": mcp_list(&spec)}), 60).await?,
         };
         let sid = session["sessionId"].as_str().map(String::from).or_else(|| spec.resume.clone()).unwrap_or_default();
@@ -249,7 +257,13 @@ pub async fn run(spec: RunSpec, approver: &dyn Approver, tx: EventTx, mut cancel
         if let Some(th) = spec.effort.as_deref().and_then(|e| match e { "low" => Some("low"), "medium" => Some("high"), "high" => Some("max"), _ => None }) {
             call(&mut p, &mut id, "session/set_config_option", json!({"sessionId": sid, "configId": "thinking", "value": th}), 20).await.ok();
         }
-        let mode = if spec.mode == PermissionMode::Plan { "plan" } else { "default" };
+        // Kimi's own modes. "Под ключ" is its `auto`: it approves safe operations by itself instead of asking us
+        // about every one, and still asks about the rest, so the danger rules keep working.
+        let mode = match spec.mode {
+            PermissionMode::Plan => "plan",
+            PermissionMode::Auto => "auto",
+            _ => "default",
+        };
         call(&mut p, &mut id, "session/set_mode", json!({"sessionId": sid, "modeId": mode}), 20).await.ok();
         Ok::<String, String>(sid)
     }

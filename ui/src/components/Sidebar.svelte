@@ -113,16 +113,13 @@
     { kind: 'access', label: 'Доступы', icon: 'key', img: 'access' },
     { kind: 'settings', label: 'Настройки', icon: 'sliders' },
   ];
-  // The chats are what the person comes for: the sections used every day stay in sight, the rest wait behind
-  // "Ещё" (and show themselves while one of them is open).
-  const daily: View['kind'][] = ['agents', 'projects', 'obligations'];
-  const mainNav = nav.filter((n) => daily.includes(n.kind));
-  const restNav = nav.filter((n) => !daily.includes(n.kind));
-  let more = $state((() => { try { return localStorage.getItem('senate.navMore') === '1'; } catch { return false; } })());
-  const moreOpen = $derived(more || restNav.some((n) => isView(n.kind)));
-  function toggleMore() {
-    more = !moreOpen;
-    try { localStorage.setItem('senate.navMore', more ? '1' : '0'); } catch { /* remembered only when storage works */ }
+  // The sections are one card, "Меню", that folds to its title: folded, the chats get the whole column. The fold is
+  // remembered; folded, the title still says which section is open and how much waits for the person.
+  let menuOpen = $state((() => { try { return localStorage.getItem('senate.menu') !== '0'; } catch { return true; } })());
+  const section = $derived(nav.find((n) => isView(n.kind)));
+  function toggleMenu() {
+    menuOpen = !menuOpen;
+    try { localStorage.setItem('senate.menu', menuOpen ? '1' : '0'); } catch { /* remembered only when storage works */ }
   }
 </script>
 
@@ -200,18 +197,23 @@
     {#if q && !chats.length && !forums.length}<p class="faint pad">Ничего не найдено</p>{/if}
   </div>
 
-  <div class="foot">
-    {#snippet navRow(n: (typeof nav)[number])}
-      <button class="nav" class:on={isView(n.kind)} aria-current={isView(n.kind) ? "page" : undefined} onclick={() => go({ kind: n.kind } as View)}>
-        <span class="ico">{#if n.img}<img class="nimg" src={`/icons/${n.img}.png`} width="17" height="17" alt="" />{:else}<Icon name={n.icon} size={13} />{/if}</span>{n.label}
-        {#if n.kind === 'obligations' && badge}<span class="badge">{badge}</span>{/if}
-      </button>
-    {/snippet}
-    {#each mainNav as n (n.kind)}{@render navRow(n)}{/each}
-    <button class="nav more" onclick={toggleMore} aria-expanded={moreOpen}>
-      <span class="ico mchev" class:open={moreOpen}><Icon name="right" size={11} /></span>Ещё
+  <div class="foot menu" class:shut={!menuOpen}>
+    <button class="menu-head" onclick={toggleMenu} aria-expanded={menuOpen} aria-controls="side-menu">
+      <span class="mchev" class:open={menuOpen} aria-hidden="true"><Icon name="right" size={11} /></span>
+      <span class="mtitle">Меню</span>
+      {#if !menuOpen && section}<span class="mcur">{section.label}</span>{/if}
+      {#if !menuOpen && badge}<span class="badge">{badge}</span>{/if}
     </button>
-    {#if moreOpen}{#each restNav as n (n.kind)}{@render navRow(n)}{/each}{/if}
+    {#if menuOpen}
+      <div id="side-menu" class="menu-list">
+        {#each nav as n (n.kind)}
+          <button class="nav" class:on={isView(n.kind)} aria-current={isView(n.kind) ? "page" : undefined} onclick={() => go({ kind: n.kind } as View)}>
+            <span class="ico">{#if n.img}<img class="nimg" src={`/icons/${n.img}.png`} width="17" height="17" alt="" />{:else}<Icon name={n.icon} size={13} />{/if}</span>{n.label}
+            {#if n.kind === 'obligations' && badge}<span class="badge">{badge}</span>{/if}
+          </button>
+        {/each}
+      </div>
+    {/if}
   </div>
   <Splitter pane="sidebar" edge="right" label="Ширина боковой панели" />
 </nav>
@@ -420,7 +422,15 @@
   /* the glass icons are light grey: darken them on a light surface */
   :global(:root[data-theme='light']) .nimg { filter: brightness(0.42) contrast(1.15); }
   @media (prefers-color-scheme: light) { :global(:root:not([data-theme='dark'])) .nimg { filter: brightness(0.42) contrast(1.15); } }
-  .nav.more { color: var(--fg-3); }
+  .foot.menu { margin: 6px 6px 8px; padding: 2px 4px 4px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg-raised); gap: 0; }
+  .foot.menu.shut { padding-bottom: 2px; }
+  .menu-head { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 28px; padding: 0 6px; border-radius: 8px; color: var(--fg-2); font-size: 12px; font-weight: 600; min-width: 0; }
+  .menu-head:hover { color: var(--fg); }
+  .menu-head:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .mtitle { white-space: nowrap; }
+  .mcur { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; color: var(--fg-3); font-weight: 400; }
+  .menu-list { display: flex; flex-direction: column; }
+  .mchev { display: inline-flex; color: var(--fg-3); }
   .mchev { transition: transform 0.15s var(--ease); }
   .mchev.open { transform: rotate(90deg); }
   @media (prefers-reduced-motion: reduce) { .mchev { transition: none; } }

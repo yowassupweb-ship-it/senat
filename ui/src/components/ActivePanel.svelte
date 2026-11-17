@@ -1,6 +1,7 @@
 <script lang="ts">
   import { agentById, app, go, refreshLive } from '../lib/store.svelte';
   import { post } from '../lib/api';
+  import { tidyHint } from '../lib/format';
   import type { LiveRun } from '../lib/types';
   import Avatar from './Avatar.svelte';
   import Icon from './Icon.svelte';
@@ -66,6 +67,8 @@
   const viewThread = $derived(app.view.kind === 'chat' ? app.threads.find((t) => t.id === (app.view as any).id) : undefined);
   // every chat has files to show: its project's folder, or the specialists' private folders it works in
   const viewFolder = $derived(!!viewThread);
+  // how many people are at work, councils included: the number next to the title and on the folded rail
+  const working = $derived(new Set(runs.map((r) => r.agent_id)).size);
   const busy = $derived(runs.some((r) => r.status === 'running' || r.status === 'queued' || r.awaiting));
   // someone waiting for the person's answer opens the panel even when it was folded: the answer is right there
   const waiting = $derived(runs.some((r) => r.ask || r.question));
@@ -152,7 +155,7 @@
     <Splitter pane="live" edge="left" label="Ширина панели «Сейчас работают»" />
     <header>
       <b>Сейчас работают</b>
-      {#if groups.length}<span class="count" aria-label={`${groups.length} в работе`}>{groups.length}</span>{/if}
+      {#if working}<span class="count" aria-label={`${working} в работе`}>{working}</span>{/if}
       <span class="grow"></span>
       {#if viewFolder}<button class="icon-btn" aria-pressed={app.panel} onclick={() => (app.panel = !app.panel)} aria-label="Файлы и изменения проекта" title="Файлы и изменения проекта"><Icon name="folder" size={15} /></button>{/if}
       <button class="icon-btn" onclick={toggle} aria-label="Свернуть панель" title={busy ? 'Свернуть до конца работы' : 'Свернуть'}><Icon name="right" size={15} /></button>
@@ -208,7 +211,7 @@
                 <button class="btn sm primary" type="submit">Ответить</button>
               </form>
             </div>
-          {:else if r.hint}<div class="hint">{r.hint}</div>{/if}
+          {:else if r.hint}<div class="hint" title={r.hint}>{tidyHint(r.hint)}</div>{/if}
           {#if r.plan}
             <div class="plan" title={r.plan.current}>
               <span class="bar" aria-hidden="true"><i style="width:{Math.round((r.plan.done / Math.max(1, r.plan.total)) * 100)}%"></i></span>
@@ -232,15 +235,15 @@
           {/if}
         </article>
       {:else}
-        <p class="empty muted">Никто не работает. Панель закреплена: сверните её, и она будет открываться сама, когда кто-то возьмётся за дело.</p>
+        {#if !councils.length}<p class="empty muted">Сейчас никто не работает. Панель можно свернуть: она откроется сама, когда кто-то возьмётся за дело.</p>{/if}
       {/each}
 
     </div>
   {:else}
     {#if viewFolder}<button class="rail-folder" aria-pressed={app.panel} onclick={() => (app.panel = !app.panel)} aria-label="Файлы и изменения проекта" title="Файлы и изменения проекта"><Icon name="folder" size={16} /></button>{/if}
-    <button class="rail-btn" onclick={toggle} aria-label={busy ? `Сейчас работают: ${groups.length}. Развернуть панель` : 'Никто не работает. Закрепить панель открытой'} title={busy ? 'Сейчас работают' : 'Никто не работает'}>
+    <button class="rail-btn" onclick={toggle} aria-label={busy ? `Сейчас работают: ${working}. Развернуть панель` : 'Никто не работает. Закрепить панель открытой'} title={busy ? 'Сейчас работают' : 'Никто не работает'}>
       <Icon name="bolt" size={16} />
-      {#if groups.length}<span class="count">{groups.length}</span>{/if}
+      {#if working}<span class="count">{working}</span>{/if}
       {#each groups.slice(0, 6) as g (g.agent_id)}
         {@const ag = agentById(g.agent_id)}
         <span class="rav" class:on={g.lead.status === 'running'}><Avatar name={ag?.name} color={ag?.accent} size={26} />{#if g.rest.length}<span class="qn">+{g.rest.length}</span>{/if}</span>
